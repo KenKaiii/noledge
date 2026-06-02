@@ -27,7 +27,7 @@
 	--border: #e6e8ec;
 	--input: #e6e8ec;
 	--ring: #624de3;
-	--sidebar: #f8f8fb;
+	--sidebar: var(--background);
 	--sidebar-foreground: #16181a;
 	--sidebar-primary: #624de3;
 	--sidebar-primary-foreground: #ffffff;
@@ -58,7 +58,7 @@
 	--border: oklch(1 0 0 / 10%);
 	--input: oklch(1 0 0 / 15%);
 	--ring: #8d7bff;
-	--sidebar: #1d2021;
+	--sidebar: var(--background);
 	--sidebar-foreground: #f1f2f4;
 	--sidebar-primary: #8d7bff;
 	--sidebar-primary-foreground: #16181a;

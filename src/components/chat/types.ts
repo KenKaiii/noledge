@@ -1,4 +1,4 @@
-import type { ChatReasoningStep, ChatSource } from "@/lib/chat-mock";
+import type { ChatReasoningStep, ChatSource } from "@/lib/ai/chat/sse";
 
 export type ChatStatus = "ready" | "submitting" | "streaming";
 

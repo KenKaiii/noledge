@@ -13,7 +13,11 @@ import {
 	PromptInputTextarea,
 } from "@/components/prompt-kit/prompt-input";
 import { Button } from "@/components/ui/button";
+import { ModelPicker } from "./model-picker";
 import type { Attachment, ChatStatus } from "./types";
+
+export const UPLOAD_ACCEPT =
+	".txt,.md,.pdf,.docx,.pptx,.xlsx,.odt,.odp,.ods,.rtf,.csv,.html,image/*";
 
 type ChatInputBarProps = {
 	value: string;
@@ -24,6 +28,8 @@ type ChatInputBarProps = {
 	attachments: Attachment[];
 	onFilesAdded: (files: File[]) => void;
 	onRemoveAttachment: (id: string) => void;
+	model: string | null;
+	onModelChange: (id: string) => void;
 };
 
 export function ChatInputBar({
@@ -35,12 +41,14 @@ export function ChatInputBar({
 	attachments,
 	onFilesAdded,
 	onRemoveAttachment,
+	model,
+	onModelChange,
 }: ChatInputBarProps): React.JSX.Element {
 	const isBusy = status === "submitting" || status === "streaming";
 	const canSend = value.trim().length > 0 || attachments.length > 0;
 
 	return (
-		<FileUpload onFilesAdded={onFilesAdded} accept="image/*,.pdf,.txt,.md">
+		<FileUpload onFilesAdded={onFilesAdded} accept={UPLOAD_ACCEPT}>
 			<PromptInput
 				value={value}
 				onValueChange={onValueChange}
@@ -104,6 +112,7 @@ export function ChatInputBar({
 								<span>Search</span>
 							</Button>
 						</PromptInputAction>
+						<ModelPicker value={model} onChange={onModelChange} />
 					</div>
 
 					<PromptInputAction tooltip={isBusy ? "Stop" : "Send"}>

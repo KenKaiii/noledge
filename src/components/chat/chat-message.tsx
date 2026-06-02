@@ -171,7 +171,7 @@ function AssistantMessage({
 					<span className="text-xs text-muted-foreground">Sources</span>
 					{message.sources.map((source) => (
 						<Source key={source.id} href={source.href}>
-							<SourceTrigger showFavicon label={source.title} />
+							<SourceTrigger label={source.title} />
 							<SourceContent
 								title={source.title}
 								description={source.description}

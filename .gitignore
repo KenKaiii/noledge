@@ -42,3 +42,6 @@ next-env.d.ts
 
 # Local scratch artifacts
 .gg/screenshots/
+
+# noledge local data (sqlite vector store)
+/.data/
