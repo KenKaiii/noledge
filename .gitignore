@@ -42,6 +42,10 @@ next-env.d.ts
 
 # Local scratch artifacts
 .gg/screenshots/
+.gg/plans/
+
+# tesseract.js OCR language data (downloaded at runtime)
+*.traineddata
 
 # noledge local data (sqlite vector store)
 /.data/

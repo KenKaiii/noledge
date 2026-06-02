@@ -1,9 +1,9 @@
-import { type ModelMessage, streamText } from "ai";
+import { type ModelMessage, stepCountIs, streamText } from "ai";
 import { z } from "zod";
-import { buildSystemPrompt, toSources } from "@/lib/ai/chat/prompt";
+import { buildToolSystemPrompt, toSources } from "@/lib/ai/chat/prompt";
 import { type ChatStreamChunk, encodeChunk } from "@/lib/ai/chat/sse";
+import { createKnowledgeTools } from "@/lib/ai/chat/tools";
 import { resolveModel } from "@/lib/ai/models/registry";
-import { type RetrievedChunk, retrieveChunks } from "@/lib/ai/rag/retrieve";
 
 const textPartSchema = z.object({
 	type: z.literal("text"),
@@ -27,16 +27,6 @@ function partsToText(parts: { text: string }[]): string {
 		.map((part) => part.text)
 		.join("\n")
 		.trim();
-}
-
-function lastUserText(
-	messages: z.infer<typeof bodySchema>["messages"],
-): string {
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const message = messages[i];
-		if (message?.role === "user") return partsToText(message.parts);
-	}
-	return "";
 }
 
 function toModelMessages(
@@ -83,32 +73,43 @@ export async function POST(request: Request): Promise<Response> {
 		});
 	}
 
-	const query = lastUserText(messages);
-	const sources: CollectedSources =
-		useRag && query.length > 0
-			? await collectSources(query, request.signal)
-			: { chunks: [], sourceChips: [] };
-
-	const system = buildSystemPrompt(sources.chunks);
-
 	const stream = new ReadableStream<Uint8Array>({
 		async start(controller) {
 			const aborted = (): boolean => request.signal.aborted;
+			const emittedSources = new Set<string>();
 			try {
-				for (const source of sources.sourceChips) {
-					controller.enqueue(encodeChunk({ type: "source", source }));
-				}
-
 				const result = streamText({
 					model: resolved.model,
-					system,
+					system: buildToolSystemPrompt(),
 					messages: toModelMessages(messages),
+					tools: createKnowledgeTools(request.signal),
+					// Grounding is enforced via the system prompt (always search before
+					// answering). We keep tool choice on "auto" rather than forcing a tool
+					// call, because reasoning models reject a forced tool_choice while
+					// thinking is enabled.
+					toolChoice: useRag ? "auto" : "none",
+					stopWhen: stepCountIs(6),
 					abortSignal: request.signal,
 				});
 
-				for await (const delta of result.textStream) {
+				for await (const part of result.fullStream) {
 					if (aborted()) break;
-					controller.enqueue(encodeChunk({ type: "text", text: delta }));
+					if (part.type === "text-delta") {
+						controller.enqueue(encodeChunk({ type: "text", text: part.text }));
+						continue;
+					}
+					if (
+						part.type === "tool-result" &&
+						!part.dynamic &&
+						part.toolName === "searchKnowledge" &&
+						part.output.ok
+					) {
+						for (const source of toSources(part.output.chunks)) {
+							if (emittedSources.has(source.id)) continue;
+							emittedSources.add(source.id);
+							controller.enqueue(encodeChunk({ type: "source", source }));
+						}
+					}
 				}
 
 				controller.enqueue(
@@ -134,20 +135,6 @@ export async function POST(request: Request): Promise<Response> {
 	});
 
 	return new Response(stream, { headers: sseHeaders() });
-}
-
-type CollectedSources = {
-	chunks: RetrievedChunk[];
-	sourceChips: ReturnType<typeof toSources>;
-};
-
-async function collectSources(
-	query: string,
-	signal: AbortSignal,
-): Promise<CollectedSources> {
-	const retrieved = await retrieveChunks(query, { signal, topK: 5 });
-	if (!retrieved.ok) return { chunks: [], sourceChips: [] };
-	return { chunks: retrieved.chunks, sourceChips: toSources(retrieved.chunks) };
 }
 
 function sseHeaders(): HeadersInit {

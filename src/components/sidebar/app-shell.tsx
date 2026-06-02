@@ -1,5 +1,7 @@
 "use client";
 
+import { Suspense } from "react";
+
 import {
 	SidebarInset,
 	SidebarProvider,
@@ -14,7 +16,9 @@ export function AppShell({
 }): React.JSX.Element {
 	return (
 		<SidebarProvider>
-			<AppSidebar />
+			<Suspense fallback={null}>
+				<AppSidebar />
+			</Suspense>
 			<SidebarInset className="h-svh min-w-0">
 				<header className="flex h-12 shrink-0 items-center gap-2 border-b px-3 md:hidden">
 					<SidebarTrigger />

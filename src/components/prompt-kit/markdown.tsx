@@ -4,13 +4,15 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
-import { CodeBlock, CodeBlockCode } from "./code-block";
+import { CodeBlock, CodeBlockCode, CodeHighlightContext } from "./code-block";
 
 export type MarkdownProps = {
 	children: string;
 	id?: string;
 	className?: string;
 	components?: Partial<Components>;
+	/** When true, code blocks defer Shiki highlighting until streaming ends. */
+	isStreaming?: boolean;
 };
 
 function parseMarkdownIntoBlocks(markdown: string): string[] {
@@ -86,21 +88,28 @@ function MarkdownComponent({
 	id,
 	className,
 	components = INITIAL_COMPONENTS,
+	isStreaming = false,
 }: MarkdownProps) {
 	const generatedId = useId();
 	const blockId = id ?? generatedId;
 	const blocks = useMemo(() => parseMarkdownIntoBlocks(children), [children]);
+	const highlightContext = useMemo(
+		() => ({ streaming: isStreaming }),
+		[isStreaming],
+	);
 
 	return (
-		<div className={className}>
-			{blocks.map((block, index) => (
-				<MemoizedMarkdownBlock
-					key={`${blockId}-block-${index}`}
-					content={block}
-					components={components}
-				/>
-			))}
-		</div>
+		<CodeHighlightContext.Provider value={highlightContext}>
+			<div className={className}>
+				{blocks.map((block, index) => (
+					<MemoizedMarkdownBlock
+						key={`${blockId}-block-${index}`}
+						content={block}
+						components={components}
+					/>
+				))}
+			</div>
+		</CodeHighlightContext.Provider>
 	);
 }
 

@@ -152,7 +152,10 @@ function AssistantMessage({
 			{isWaiting && !message.content ? (
 				<TextShimmer className="text-sm">Thinking…</TextShimmer>
 			) : (
-				<Markdown className="prose w-full max-w-full break-words dark:prose-invert">
+				<Markdown
+					isStreaming={isStreaming}
+					className="prose w-full max-w-full break-words dark:prose-invert"
+				>
 					{message.content}
 				</Markdown>
 			)}

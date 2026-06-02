@@ -1,9 +1,20 @@
 "use client";
 
 import type React from "react";
-import { useEffect, useState } from "react";
-import { codeToHtml } from "shiki";
+import { createContext, useContext, useEffect, useState } from "react";
+// `shiki/bundle/web` is far lighter than the all-languages `shiki` entry and its
+// `codeToHtml` shorthand reuses a singleton highlighter, lazy-loading only the
+// langs/themes actually requested.
+import { codeToHtml } from "shiki/bundle/web";
 import { cn } from "@/lib/utils";
+
+/**
+ * Signals that the surrounding markdown is still streaming. While true, code
+ * blocks render plain text instead of re-running Shiki on every token flush.
+ */
+export const CodeHighlightContext = createContext<{ streaming: boolean }>({
+	streaming: false,
+});
 
 export type CodeBlockProps = {
 	children?: React.ReactNode;
@@ -39,24 +50,31 @@ function CodeBlockCode({
 	className,
 	...props
 }: CodeBlockCodeProps) {
+	const { streaming } = useContext(CodeHighlightContext);
 	const [highlightedHtml, setHighlightedHtml] = useState<string | null>(null);
 
 	useEffect(() => {
-		async function highlight() {
-			if (!code) {
-				setHighlightedHtml("<pre><code></code></pre>");
-				return;
-			}
+		// Defer highlighting until the stream settles: highlighting a block that
+		// mutates every flush is wasteful and causes flicker.
+		if (streaming) return;
 
-			const html = await codeToHtml(code, {
-				lang: language,
-				themes: { light: themes.light, dark: themes.dark },
-				defaultColor: "light-dark()",
-			});
-			setHighlightedHtml(html);
+		if (!code) {
+			setHighlightedHtml("<pre><code></code></pre>");
+			return;
 		}
-		highlight();
-	}, [code, language, themes.light, themes.dark]);
+
+		let cancelled = false;
+		void codeToHtml(code, {
+			lang: language,
+			themes: { light: themes.light, dark: themes.dark },
+			defaultColor: "light-dark()",
+		}).then((html) => {
+			if (!cancelled) setHighlightedHtml(html);
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, [code, language, themes.light, themes.dark, streaming]);
 
 	const classNames = cn(
 		"w-full overflow-x-auto text-[13px] [&>pre]:px-4 [&>pre]:py-4",

@@ -194,6 +194,28 @@ export function Chat(): React.JSX.Element {
 			const controller = new AbortController();
 			abortRef.current = controller;
 
+			// Throttle text rendering: tokens arrive far faster than the UI needs to
+			// repaint. We buffer deltas and flush the accumulated text on a ~50ms
+			// cadence so React re-renders (and the markdown re-lex) stay bounded
+			// regardless of token rate.
+			let pendingText = "";
+			let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+			const flushText = (): void => {
+				flushTimer = null;
+				if (!pendingText) return;
+				const delta = pendingText;
+				pendingText = "";
+				updateAssistant(assistantId, (prev) => ({
+					...prev,
+					content: prev.content + delta,
+				}));
+			};
+
+			const scheduleFlush = (): void => {
+				if (flushTimer === null) flushTimer = setTimeout(flushText, 50);
+			};
+
 			try {
 				const response = await fetch("/api/chat", {
 					method: "POST",
@@ -228,10 +250,8 @@ export function Chat(): React.JSX.Element {
 
 						if (chunk.type === "text") {
 							setStatus("streaming");
-							updateAssistant(assistantId, (prev) => ({
-								...prev,
-								content: prev.content + chunk.text,
-							}));
+							pendingText += chunk.text;
+							scheduleFlush();
 						} else if (chunk.type === "reasoning") {
 							updateAssistant(assistantId, (prev) => ({
 								...prev,
@@ -255,7 +275,12 @@ export function Chat(): React.JSX.Element {
 						}
 					}
 				}
+				// Flush any buffered tail so no trailing tokens are dropped.
+				if (flushTimer !== null) clearTimeout(flushTimer);
+				flushText();
 			} catch (error) {
+				if (flushTimer !== null) clearTimeout(flushTimer);
+				flushText();
 				if (!(error instanceof DOMException && error.name === "AbortError")) {
 					updateAssistant(assistantId, (prev) => ({
 						...prev,

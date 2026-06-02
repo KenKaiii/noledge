@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RetrievedChunk } from "@/lib/ai/rag/retrieve";
-import { buildSystemPrompt, toSources } from "./prompt";
+import { buildToolSystemPrompt, toSources } from "./prompt";
 
 const chunks: RetrievedChunk[] = [
 	{
@@ -19,17 +19,15 @@ const chunks: RetrievedChunk[] = [
 	},
 ];
 
-describe("buildSystemPrompt", () => {
-	it("returns the base prompt with no chunks", () => {
-		const prompt = buildSystemPrompt([]);
+describe("buildToolSystemPrompt", () => {
+	it("never injects retrieved context", () => {
+		const prompt = buildToolSystemPrompt();
 		expect(prompt).not.toContain("<context>");
 	});
 
-	it("injects retrieved context and source titles", () => {
-		const prompt = buildSystemPrompt(chunks);
-		expect(prompt).toContain("<context>");
-		expect(prompt).toContain("Cat Facts");
-		expect(prompt).toContain("Cats sleep a lot.");
+	it("instructs the model to use the searchKnowledge tool", () => {
+		const prompt = buildToolSystemPrompt();
+		expect(prompt).toContain("searchKnowledge");
 	});
 });
 

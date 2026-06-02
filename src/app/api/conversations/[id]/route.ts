@@ -126,3 +126,18 @@ export async function PUT(
 
 	return Response.json({ success: true });
 }
+
+export async function DELETE(
+	_request: Request,
+	{ params }: { params: Promise<{ id: string }> },
+): Promise<Response> {
+	const { id } = await params;
+	const db = getDatabase();
+
+	const result = db.prepare("DELETE FROM conversations WHERE id = ?").run(id);
+	if (result.changes === 0) {
+		return Response.json({ error: "Conversation not found" }, { status: 404 });
+	}
+
+	return Response.json({ success: true });
+}

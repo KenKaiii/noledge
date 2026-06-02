@@ -1,8 +1,8 @@
 "use client";
 
-import { MessageSquare, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import Link from "next/link";
-import { usePathname, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -19,6 +19,7 @@ import {
 	SidebarMenuItem,
 	SidebarTrigger,
 } from "@/components/ui/sidebar";
+import { ChatListItem } from "./chat-list-item";
 import { NAV_ITEMS } from "./nav-data";
 import { SettingsDialog } from "./settings-dialog";
 
@@ -30,6 +31,7 @@ type Conversation = {
 
 export function AppSidebar(): React.JSX.Element {
 	const pathname = usePathname();
+	const router = useRouter();
 	const searchParams = useSearchParams();
 	const activeChatId = searchParams.get("chat");
 	const [settingsOpen, setSettingsOpen] = useState(false);
@@ -127,18 +129,22 @@ export function AppSidebar(): React.JSX.Element {
 								</SidebarMenuItem>
 							) : (
 								conversations.map((session) => (
-									<SidebarMenuItem key={session.id}>
-										<SidebarMenuButton
-											asChild
-											isActive={activeChatId === session.id}
-											tooltip={session.title}
-										>
-											<Link href={`/?chat=${session.id}`}>
-												<MessageSquare className="size-4" />
-												<span className="truncate">{session.title}</span>
-											</Link>
-										</SidebarMenuButton>
-									</SidebarMenuItem>
+									<ChatListItem
+										key={session.id}
+										chat={session}
+										isActive={activeChatId === session.id}
+										onRenamed={(id, title) =>
+											setConversations((prev) =>
+												prev.map((c) => (c.id === id ? { ...c, title } : c)),
+											)
+										}
+										onDeleted={(id) => {
+											setConversations((prev) =>
+												prev.filter((c) => c.id !== id),
+											);
+											if (activeChatId === id) router.replace("/");
+										}}
+									/>
 								))
 							)}
 						</SidebarMenu>

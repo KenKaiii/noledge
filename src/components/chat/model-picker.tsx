@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronDown, Cpu } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -62,19 +62,22 @@ export function ModelPicker({
 		<DropdownMenu>
 			<DropdownMenuTrigger asChild>
 				<Button variant="ghost" size="sm" type="button" className="gap-1.5">
-					<Cpu className="size-4" />
 					<span className="max-w-32 truncate">{current?.label ?? "Model"}</span>
 					<ChevronDown className="size-3.5 opacity-60" />
 				</Button>
 			</DropdownMenuTrigger>
-			<DropdownMenuContent align="start">
+			<DropdownMenuContent align="start" className="border-0">
 				<DropdownMenuLabel>Model</DropdownMenuLabel>
 				<DropdownMenuRadioGroup
 					value={value ?? undefined}
 					onValueChange={onChange}
 				>
 					{models.map((model) => (
-						<DropdownMenuRadioItem key={model.id} value={model.id}>
+						<DropdownMenuRadioItem
+							key={model.id}
+							value={model.id}
+							className="pl-2 [&>span:first-child]:hidden"
+						>
 							{model.label}
 						</DropdownMenuRadioItem>
 					))}

@@ -4,7 +4,12 @@ import { Monitor, Moon, Plug, Settings, Sun, User, X } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogTitle,
+} from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import { type Theme, useTheme } from "@/hooks/use-theme";
 import { cn } from "@/lib/utils";
@@ -42,6 +47,10 @@ export function SettingsDialog({
 				showCloseButton={false}
 				className="h-[calc(100%-2rem)] max-h-[720px] w-[calc(100%-2rem)] max-w-4xl overflow-hidden border-0 p-0 sm:max-w-4xl"
 			>
+				<DialogTitle className="sr-only">Settings</DialogTitle>
+				<DialogDescription className="sr-only">
+					Manage your general, provider, and account settings.
+				</DialogDescription>
 				<div className="flex h-full">
 					{/* Left sidebar */}
 					<aside className="flex w-52 flex-col border-r">
