@@ -84,6 +84,42 @@ describe("ingest + retrieve", () => {
 		expect(retrieved.chunks[0]?.content.toLowerCase()).toContain("cat");
 	});
 
+	it("filters out chunks beyond the distance ceiling", async () => {
+		db = openDatabase(":memory:");
+
+		const docs = [
+			{ title: "Cats", text: "The cat sat on the warm windowsill." },
+			{ title: "Finance", text: "Quarterly finance report shows revenue." },
+			{ title: "Weather", text: "The weather forecast predicts rain." },
+		];
+		for (const doc of docs) {
+			await ingestDocument(
+				{
+					data: Buffer.from(doc.text, "utf8"),
+					filename: `${doc.title}.txt`,
+					mime: "text/plain",
+					title: doc.title,
+				},
+				{ db, embedder, chunkOptions: { size: 1000, overlap: 0 } },
+			);
+		}
+
+		// The fake embedder makes non-matching topics orthogonal (cosine
+		// distance 1.0); a strict ceiling must keep only the cat chunk even
+		// though topK asks for more.
+		const retrieved = await retrieveChunks("Tell me about the cat", {
+			db,
+			embedder,
+			topK: 3,
+			maxDistance: 0.5,
+		});
+
+		expect(retrieved.ok).toBe(true);
+		if (!retrieved.ok) return;
+		expect(retrieved.chunks).toHaveLength(1);
+		expect(retrieved.chunks[0]?.documentTitle).toBe("Cats");
+	});
+
 	it("rejects a document with no extractable text", async () => {
 		db = openDatabase(":memory:");
 		const result = await ingestDocument(

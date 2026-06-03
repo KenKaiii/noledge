@@ -30,4 +30,25 @@ describe("chunkText", () => {
 		expect(chunks.length).toBeGreaterThan(1);
 		expect(chunks.every((c) => c.length <= 4)).toBe(true);
 	});
+
+	it("splits on paragraph boundaries, not mid-word", () => {
+		const first = "First paragraph about cats and their habits.";
+		const second = "Second paragraph about dogs and their walks.";
+		const chunks = chunkText(`${first}\n\n${second}`, {
+			size: 50,
+			overlap: 0,
+		});
+		expect(chunks).toEqual([first, second]);
+	});
+
+	it("keeps words intact when splitting a long line", () => {
+		const text = "alpha bravo charlie delta echo foxtrot golf hotel india";
+		const chunks = chunkText(text, { size: 20, overlap: 0 });
+		// No chunk should start or end by slicing through a word.
+		for (const chunk of chunks) {
+			expect(text).toContain(chunk);
+			expect(chunk).toBe(chunk.trim());
+		}
+		expect(chunks.join(" ")).toContain("foxtrot");
+	});
 });

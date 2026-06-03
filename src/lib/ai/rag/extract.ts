@@ -1,6 +1,8 @@
 import { parseOffice, type SupportedFileType } from "officeparser";
 import { getEnv } from "@/lib/ai/env";
+import { normalizeText } from "./normalize";
 import { ocrImage } from "./ocr";
+import { ocrPdfImages } from "./pdf-ocr";
 
 export type ExtractResult =
 	| { ok: true; text: string }
@@ -62,7 +64,7 @@ export async function extractText(
 
 	if (isImage(extension, mime)) {
 		try {
-			const text = await ocrImage(data);
+			const text = normalizeText(await ocrImage(data), { aggressive: true });
 			return { ok: true, text };
 		} catch (error) {
 			return {
@@ -75,15 +77,29 @@ export async function extractText(
 	const fileType = OFFICE_EXTENSIONS[extension];
 	if (fileType) {
 		try {
+			// For PDFs we deliberately disable officeparser's built-in OCR: it feeds
+			// uncapped page rasters to Tesseract (slow, and prone to an uncaught
+			// "Too many properties to enumerate") and mishandles 1-bpp scans anyway.
+			// Scanned PDFs are handled by our own size-capped `ocrPdfImages` path
+			// below. Other office formats keep OCR for their small embedded images.
+			const useOfficeOcr = env.OCR_ENABLED && fileType !== "pdf";
 			const ast = await parseOffice(data, {
 				fileType,
-				extractAttachments: env.OCR_ENABLED,
-				ocr: env.OCR_ENABLED,
+				extractAttachments: useOfficeOcr,
+				ocr: useOfficeOcr,
 				ocrLanguage: env.OCR_LANGUAGE,
 				abortSignal: signal ?? null,
 			});
-			const text = withAttachmentOcr(ast.toText().trim(), ast.attachments);
-			return { ok: true, text };
+			const parsed = withAttachmentOcr(ast.toText().trim(), ast.attachments);
+
+			// A PDF with no text layer is a scan: OCR its rendered page images via
+			// our controlled, size-capped path.
+			if (parsed.length === 0 && fileType === "pdf" && env.OCR_ENABLED) {
+				const ocrText = await ocrPdfImages(data, signal);
+				return { ok: true, text: normalizeText(ocrText, { aggressive: true }) };
+			}
+
+			return { ok: true, text: normalizeText(parsed) };
 		} catch (error) {
 			return {
 				ok: false,
@@ -99,7 +115,7 @@ export async function extractText(
 		mime.startsWith("text/") ||
 		mime === "application/json"
 	) {
-		return { ok: true, text: data.toString("utf8").trim() };
+		return { ok: true, text: normalizeText(data.toString("utf8")) };
 	}
 
 	return {

@@ -58,4 +58,15 @@ describe("extractText", () => {
 		expect(result.ok).toBe(true);
 		if (result.ok) expect(result.text.toLowerCase()).toContain("hello");
 	}, 120_000);
+
+	it("OCRs a scanned (image-only, 1-bpp) PDF", async () => {
+		const result = await extractText(
+			fixture("scanned.pdf"),
+			"scanned.pdf",
+			"application/pdf",
+		);
+		expect(result.ok).toBe(true);
+		if (result.ok)
+			expect(result.text.toLowerCase()).toContain("scanned invoice");
+	}, 120_000);
 });

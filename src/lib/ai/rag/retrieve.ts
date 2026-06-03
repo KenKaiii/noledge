@@ -19,8 +19,18 @@ export type RetrieveOptions = {
 	db?: Database;
 	embedder?: Embedder;
 	topK?: number;
+	/**
+	 * Maximum cosine distance (0 = identical) for a chunk to be returned. Filters
+	 * out clearly-unrelated matches so the model is not handed junk passages when
+	 * the corpus has nothing relevant. `vec_chunks` uses cosine distance in
+	 * `[0, 2]`; relevant matches typically score well under the default.
+	 */
+	maxDistance?: number;
 	signal?: AbortSignal;
 };
+
+/** Default cosine-distance ceiling: keep relevant + borderline, drop the rest. */
+const DEFAULT_MAX_DISTANCE = 0.85;
 
 type Row = {
 	chunk_id: string;
@@ -41,6 +51,7 @@ export async function retrieveChunks(
 	const db = options.db ?? getDatabase();
 	const embedder = options.embedder ?? embedTexts;
 	const topK = options.topK ?? 5;
+	const maxDistance = options.maxDistance ?? DEFAULT_MAX_DISTANCE;
 
 	const trimmed = query.trim();
 	if (trimmed.length === 0) return { ok: true, chunks: [] };
@@ -70,13 +81,15 @@ export async function retrieveChunks(
 
 		return {
 			ok: true,
-			chunks: rows.map((row) => ({
-				chunkId: row.chunk_id,
-				documentId: row.document_id,
-				documentTitle: row.document_title,
-				content: row.content,
-				distance: row.distance,
-			})),
+			chunks: rows
+				.filter((row) => row.distance <= maxDistance)
+				.map((row) => ({
+					chunkId: row.chunk_id,
+					documentId: row.document_id,
+					documentTitle: row.document_title,
+					content: row.content,
+					distance: row.distance,
+				})),
 		};
 	} catch (error) {
 		return {
