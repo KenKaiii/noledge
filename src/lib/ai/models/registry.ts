@@ -3,7 +3,8 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { ProviderOptions } from "@ai-sdk/provider-utils";
 import type { LanguageModel } from "ai";
-import { resolveProviderCredential } from "./provider-config";
+import { kimiCodingHeaders } from "./oauth";
+import { type KeySource, resolveProviderCredential } from "./provider-config";
 import {
 	findModel,
 	MODEL_CATALOG,
@@ -32,6 +33,8 @@ export type ResolveModelResult =
 			supportsVision: boolean;
 			/** Provider-specific options (e.g. enabling thinking/reasoning summaries). */
 			providerOptions: ProviderOptions | undefined;
+			provider: ProviderId;
+			credentialSource: KeySource;
 	  }
 	| { ok: false; error: string };
 
@@ -121,7 +124,7 @@ function createOpenAICompatibleModel(
 		baseURL,
 		...(apiKey ? { apiKey } : {}),
 		...(provider === "kimi" && baseURL.includes("api.kimi.com")
-			? { headers: { "User-Agent": "kimi-code-cli/1.0.11" } }
+			? { headers: kimiCodingHeaders() }
 			: {}),
 	});
 	return compatible(modelId);
@@ -143,6 +146,11 @@ function instantiate(entry: ModelCatalogEntry): LanguageModel {
 					? {
 							...(credential.key ? { authToken: credential.key } : {}),
 							...(credential.baseURL ? { baseURL: credential.baseURL } : {}),
+							headers: {
+								"anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+								"user-agent": "claude-cli/2.1.88 (external, cli)",
+								"x-app": "cli",
+							},
 						}
 					: {
 							...(credential.key ? { apiKey: credential.key } : {}),
@@ -202,11 +210,14 @@ export function resolveModel(
 		};
 	}
 
+	const credential = resolveProviderCredential(entry.provider);
 	return {
 		ok: true,
 		model: instantiate(entry),
 		reasoning: entry.reasoning ?? false,
 		supportsVision: entry.vision ?? false,
 		providerOptions: reasoningProviderOptions(entry, thinkingEnabled),
+		provider: entry.provider,
+		credentialSource: credential.source,
 	};
 }

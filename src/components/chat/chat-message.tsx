@@ -9,13 +9,6 @@ import {
 	ThumbsUp,
 } from "@phosphor-icons/react";
 import { useState } from "react";
-import {
-	ChainOfThought,
-	ChainOfThoughtContent,
-	ChainOfThoughtItem,
-	ChainOfThoughtStep,
-	ChainOfThoughtTrigger,
-} from "@/components/prompt-kit/chain-of-thought";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import {
 	Message,
@@ -32,6 +25,12 @@ import {
 	SourceContent,
 	SourceTrigger,
 } from "@/components/prompt-kit/source";
+import {
+	Steps,
+	StepsContent,
+	StepsItem,
+	StepsTrigger,
+} from "@/components/prompt-kit/steps";
 import { TextShimmer } from "@/components/prompt-kit/text-shimmer";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -137,16 +136,19 @@ function AssistantMessage({
 			) : null}
 
 			{message.steps && message.steps.length > 0 ? (
-				<ChainOfThought className="w-full">
-					{message.steps.map((step) => (
-						<ChainOfThoughtStep key={step.id}>
-							<ChainOfThoughtTrigger>{step.label}</ChainOfThoughtTrigger>
-							<ChainOfThoughtContent>
-								<ChainOfThoughtItem>{step.detail}</ChainOfThoughtItem>
-							</ChainOfThoughtContent>
-						</ChainOfThoughtStep>
-					))}
-				</ChainOfThought>
+				<Steps className="w-full">
+					<StepsTrigger>Steps</StepsTrigger>
+					<StepsContent>
+						{message.steps.map((step) => (
+							<StepsItem key={step.id}>
+								<span className="font-medium text-foreground/80">
+									{step.label}
+								</span>
+								{step.detail ? <span> — {step.detail}</span> : null}
+							</StepsItem>
+						))}
+					</StepsContent>
+				</Steps>
 			) : null}
 
 			{isWaiting && !message.content ? (

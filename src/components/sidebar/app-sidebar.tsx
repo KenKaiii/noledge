@@ -1,11 +1,10 @@
 "use client";
 
-import { Plus } from "@phosphor-icons/react";
+import { Gear, Plus } from "@phosphor-icons/react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
 	Sidebar,
 	SidebarContent,
@@ -84,7 +83,7 @@ export function AppSidebar(): React.JSX.Element {
 		<Sidebar collapsible="icon">
 			<SidebarHeader>
 				<div className="flex items-center justify-between gap-2">
-					<span className="px-1 text-base font-semibold group-data-[collapsible=icon]:hidden">
+					<span className="logo-shimmer px-1 text-base font-semibold group-data-[collapsible=icon]:hidden">
 						noledge
 					</span>
 					<SidebarTrigger />
@@ -170,19 +169,11 @@ export function AppSidebar(): React.JSX.Element {
 					<SidebarMenuItem>
 						<SidebarMenuButton
 							data-settings-trigger
-							size="lg"
 							tooltip="Settings"
 							onClick={() => setSettingsOpen(true)}
 						>
-							<Avatar className="size-7">
-								<AvatarFallback>U</AvatarFallback>
-							</Avatar>
-							<div className="flex flex-col text-left leading-tight">
-								<span className="text-sm font-medium">User</span>
-								<span className="text-xs text-muted-foreground">
-									you@example.com
-								</span>
-							</div>
+							<Gear />
+							<span>Settings</span>
 						</SidebarMenuButton>
 					</SidebarMenuItem>
 				</SidebarMenu>

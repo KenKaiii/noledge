@@ -1,10 +1,17 @@
 import { stepCountIs, streamText } from "ai";
 import { z } from "zod";
 import { buildModelMessages } from "@/lib/ai/chat/attachments";
-import { buildToolSystemPrompt, toSources } from "@/lib/ai/chat/prompt";
+import {
+	buildToolSystemPrompt,
+	RESPONSE_STYLE_IDS,
+	type ResponseStyleId,
+	toSources,
+} from "@/lib/ai/chat/prompt";
 import { type ChatStreamChunk, encodeChunk } from "@/lib/ai/chat/sse";
-import { createKnowledgeTools } from "@/lib/ai/chat/tools";
+import { createKnowledgeTools, type RecentDocument } from "@/lib/ai/chat/tools";
+import { refreshExpiredOAuthCredentials } from "@/lib/ai/models/oauth";
 import { resolveModel } from "@/lib/ai/models/registry";
+import { getAppSetting } from "@/lib/ai/settings";
 
 const textPartSchema = z.object({
 	type: z.literal("text"),
@@ -49,10 +56,42 @@ function errorStream(message: string): ReadableStream<Uint8Array> {
 	});
 }
 
+function recentDocumentSource(document: RecentDocument): {
+	id: string;
+	href: string;
+	title: string;
+	description: string;
+} {
+	const date = new Date(document.date).toLocaleString(undefined, {
+		dateStyle: "medium",
+		timeStyle: "short",
+	});
+	return {
+		id: document.id,
+		href: "/knowledge",
+		title: document.title,
+		description: document.publishedAt
+			? `Published ${date}`
+			: `Ingested ${date}`,
+	};
+}
+
 function errorMessage(error: unknown): string {
-	return error instanceof Error
-		? `Something went wrong: ${error.message}`
-		: "Something went wrong while generating a response.";
+	if (!(error instanceof Error)) {
+		return "Something went wrong while generating a response.";
+	}
+
+	const message = error.message;
+	const normalized = message.toLowerCase();
+	if (
+		normalized.includes("rate limit") ||
+		normalized.includes("quota") ||
+		normalized.includes("usage limit")
+	) {
+		return `Provider usage/rate limit reached: ${message}`;
+	}
+
+	return `Something went wrong: ${message}`;
 }
 
 export async function POST(request: Request): Promise<Response> {
@@ -73,6 +112,7 @@ export async function POST(request: Request): Promise<Response> {
 
 	const { messages, model, useRag, thinking, timeZone } = parsed.data;
 
+	await refreshExpiredOAuthCredentials();
 	const resolved = resolveModel(model, { thinking });
 	if (!resolved.ok) {
 		return new Response(errorStream(resolved.error), {
@@ -101,9 +141,25 @@ export async function POST(request: Request): Promise<Response> {
 			let emittedReasoning = false;
 			let reasoningSeparatorPending = false;
 			try {
+				const agentSystemPrompt = getAppSetting("agent.systemPrompt");
+				const aboutUser = getAppSetting("agent.aboutUser");
+				const responseStyle = getAppSetting("agent.responseStyle");
+				const style =
+					responseStyle === "no-bullshit" || responseStyle === "to-the-point"
+						? "no-bullshit-to-the-point"
+						: RESPONSE_STYLE_IDS.includes(responseStyle as ResponseStyleId)
+							? (responseStyle as ResponseStyleId)
+							: "default";
 				const result = streamText({
 					model: resolved.model,
-					system: buildToolSystemPrompt(new Date(), timeZone),
+					system: buildToolSystemPrompt(new Date(), timeZone, {
+						anthropicOAuth:
+							resolved.provider === "anthropic" &&
+							resolved.credentialSource === "oauth",
+						...(agentSystemPrompt ? { systemPrompt: agentSystemPrompt } : {}),
+						...(aboutUser ? { aboutUser } : {}),
+						responseStyle: style,
+					}),
 					messages: modelMessages,
 					tools: createKnowledgeTools(request.signal),
 					providerOptions: resolved.providerOptions,
@@ -144,18 +200,28 @@ export async function POST(request: Request): Promise<Response> {
 						controller.enqueue(encodeChunk({ type: "text", text }));
 						continue;
 					}
-					if (
-						part.type === "tool-result" &&
-						!part.dynamic &&
-						part.toolName === "searchKnowledge" &&
-						part.output.ok
-					) {
-						for (const source of toSources(part.output.chunks)) {
-							if (emittedSources.has(source.id)) continue;
-							emittedSources.add(source.id);
-							controller.enqueue(encodeChunk({ type: "source", source }));
+					if (part.type === "tool-result" && !part.dynamic) {
+						if (part.toolName === "searchKnowledge" && part.output.ok) {
+							for (const source of toSources(part.output.chunks)) {
+								if (emittedSources.has(source.id)) continue;
+								emittedSources.add(source.id);
+								controller.enqueue(encodeChunk({ type: "source", source }));
+							}
+							continue;
 						}
-						continue;
+						if (part.toolName === "listRecentDocuments" && part.output.ok) {
+							for (const document of part.output.documents) {
+								if (emittedSources.has(document.id)) continue;
+								emittedSources.add(document.id);
+								controller.enqueue(
+									encodeChunk({
+										type: "source",
+										source: recentDocumentSource(document),
+									}),
+								);
+							}
+							continue;
+						}
 					}
 					if (part.type === "tool-error") {
 						controller.enqueue(

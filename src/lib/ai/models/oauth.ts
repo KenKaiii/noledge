@@ -1,7 +1,11 @@
 import crypto from "node:crypto";
+import http from "node:http";
+import { arch, hostname, release, type } from "node:os";
 import type { Database } from "better-sqlite3";
 import { getDatabase } from "@/lib/ai/db/client";
 import {
+	deleteProviderOAuthCredential,
+	getProviderOAuthCredential,
 	type ProviderOAuthCredential,
 	saveProviderOAuthCredential,
 } from "./provider-config";
@@ -66,7 +70,9 @@ const ANTHROPIC_SCOPE =
 const KIMI_CLIENT_ID = "17e5f671-d194-4dfb-9706-5516cb48c098";
 const KIMI_OAUTH_HOST = "https://auth.kimi.com";
 const KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1";
+const KIMI_CODE_VERSION = "1.0.11";
 const KIMI_DEVICE_TIMEOUT_MS = 15 * 60 * 1000;
+const TOKEN_REFRESH_SKEW_MS = 60 * 1000;
 
 export function isOAuthProvider(provider: string): provider is OAuthProviderId {
 	return (
@@ -92,6 +98,36 @@ function createPkce(): { verifier: string; challenge: string } {
 		crypto.createHash("sha256").update(verifier).digest(),
 	);
 	return { verifier, challenge };
+}
+
+function asciiHeader(value: string, fallback = "unknown"): string {
+	const cleaned = value.replace(/[^\u0020-\u007E]/g, "").trim();
+	return cleaned.length > 0 ? cleaned : fallback;
+}
+
+function kimiDeviceId(): string {
+	return crypto
+		.createHash("sha256")
+		.update(`${hostname()}:${type()}:${release()}:${arch()}`)
+		.digest("hex");
+}
+
+function kimiDeviceHeaders(): Record<string, string> {
+	return {
+		"X-Msh-Platform": "kimi_code_cli",
+		"X-Msh-Version": KIMI_CODE_VERSION,
+		"X-Msh-Device-Name": asciiHeader(hostname()),
+		"X-Msh-Device-Model": asciiHeader(`${type()} ${release()} ${arch()}`),
+		"X-Msh-Os-Version": asciiHeader(release()),
+		"X-Msh-Device-Id": kimiDeviceId(),
+	};
+}
+
+export function kimiCodingHeaders(): Record<string, string> {
+	return {
+		"User-Agent": `kimi-code-cli/${KIMI_CODE_VERSION}`,
+		...kimiDeviceHeaders(),
+	};
 }
 
 function saveState(row: OAuthStateRow, db: Database): void {
@@ -173,6 +209,8 @@ export async function startOAuth(
 		};
 	}
 
+	await startOpenAICallbackServer(stateId);
+
 	const url = new URL(OPENAI_AUTHORIZE_URL);
 	url.searchParams.set("response_type", "code");
 	url.searchParams.set("client_id", OPENAI_CLIENT_ID);
@@ -195,12 +233,108 @@ export async function startOAuth(
 	};
 }
 
+async function startOpenAICallbackServer(stateId: string): Promise<void> {
+	let open = false;
+	const closeServer = (): void => {
+		if (!open) return;
+		open = false;
+		server.close();
+	};
+	const server = http.createServer(async (request, response) => {
+		const url = new URL(request.url ?? "", "http://localhost:1455");
+		if (url.pathname !== "/auth/callback") {
+			response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+			response.end("Not found");
+			return;
+		}
+
+		const code = url.searchParams.get("code");
+		const state = url.searchParams.get("state");
+		if (!code || !state) {
+			response.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+			response.end(
+				oauthHtml("OpenAI callback was missing code or state.", false),
+			);
+			closeServer();
+			return;
+		}
+
+		try {
+			const db = getDatabase();
+			const row = getState(stateId, db);
+			if (
+				!row ||
+				row.provider !== "openai" ||
+				row.state !== state ||
+				!row.verifier
+			) {
+				response.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
+				response.end(
+					oauthHtml("OpenAI OAuth session expired or mismatched.", false),
+				);
+				closeServer();
+				return;
+			}
+
+			const credential = await exchangeOpenAI(code, row.verifier);
+			saveProviderOAuthCredential("openai", credential, db);
+			deleteState(stateId, db);
+			response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+			response.end(
+				oauthHtml(
+					"OpenAI login complete. You can close this tab and return to noledge.",
+					true,
+				),
+			);
+		} catch (error) {
+			response.writeHead(422, { "Content-Type": "text/html; charset=utf-8" });
+			response.end(
+				oauthHtml(
+					error instanceof Error ? error.message : "OpenAI OAuth login failed.",
+					false,
+				),
+			);
+		} finally {
+			closeServer();
+		}
+	});
+
+	await new Promise<void>((resolve, reject) => {
+		server.once("error", (error) => {
+			reject(
+				error instanceof Error
+					? error
+					: new Error("Could not start OpenAI OAuth callback server."),
+			);
+		});
+		server.listen(1455, "127.0.0.1", () => {
+			open = true;
+			resolve();
+		});
+	});
+
+	setTimeout(closeServer, 10 * 60 * 1000).unref();
+}
+
+function oauthHtml(message: string, ok: boolean): string {
+	return `<!doctype html><html><body style="font-family: system-ui; padding: 2rem;"><h1>${ok ? "Success" : "OAuth failed"}</h1><p>${escapeHtml(message)}</p></body></html>`;
+}
+
+function escapeHtml(value: string): string {
+	return value
+		.replaceAll("&", "&amp;")
+		.replaceAll("<", "&lt;")
+		.replaceAll(">", "&gt;")
+		.replaceAll('"', "&quot;");
+}
+
 async function startKimiDevice(db: Database): Promise<OAuthStartResult> {
 	const response = await fetch(
 		`${KIMI_OAUTH_HOST}/api/oauth/device_authorization`,
 		{
 			method: "POST",
 			headers: {
+				...kimiDeviceHeaders(),
 				"Content-Type": "application/x-www-form-urlencoded",
 				Accept: "application/json",
 			},
@@ -384,6 +518,7 @@ async function exchangeAnthropic(
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
+				"User-Agent": "claude-cli/2.1.88 (external, cli)",
 				"anthropic-beta": "oauth-2025-04-20",
 			},
 			body: JSON.stringify({
@@ -414,6 +549,141 @@ async function exchangeAnthropic(
 	throw lastError ?? new Error("Anthropic token exchange failed.");
 }
 
+async function refreshOpenAI(
+	refreshToken: string,
+): Promise<ProviderOAuthCredential> {
+	const response = await fetch(OPENAI_TOKEN_URL, {
+		method: "POST",
+		headers: { "Content-Type": "application/x-www-form-urlencoded" },
+		body: new URLSearchParams({
+			grant_type: "refresh_token",
+			client_id: OPENAI_CLIENT_ID,
+			refresh_token: refreshToken,
+		}),
+	});
+	if (!response.ok) {
+		throw new Error(`OpenAI token refresh failed (${response.status}).`);
+	}
+	const data = (await response.json()) as {
+		access_token: string;
+		refresh_token?: string;
+		expires_in: number;
+	};
+	return {
+		accessToken: data.access_token,
+		refreshToken: data.refresh_token ?? refreshToken,
+		expiresAt: Date.now() + data.expires_in * 1000,
+	};
+}
+
+async function refreshAnthropic(
+	refreshToken: string,
+): Promise<ProviderOAuthCredential> {
+	let lastError: Error | null = null;
+	for (const url of ANTHROPIC_TOKEN_URLS) {
+		const response = await fetch(url, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"User-Agent": "claude-cli/2.1.88 (external, cli)",
+				"anthropic-beta": "oauth-2025-04-20",
+			},
+			body: JSON.stringify({
+				grant_type: "refresh_token",
+				client_id: ANTHROPIC_CLIENT_ID,
+				refresh_token: refreshToken,
+			}),
+		});
+		if (response.ok) {
+			const data = (await response.json()) as {
+				access_token: string;
+				refresh_token?: string;
+				expires_in: number;
+			};
+			return {
+				accessToken: data.access_token,
+				refreshToken: data.refresh_token ?? refreshToken,
+				expiresAt: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
+			};
+		}
+		lastError = new Error(
+			`Anthropic token refresh failed (${response.status}).`,
+		);
+	}
+	throw lastError ?? new Error("Anthropic token refresh failed.");
+}
+
+async function refreshKimi(
+	refreshToken: string,
+): Promise<ProviderOAuthCredential> {
+	const response = await fetch(`${KIMI_OAUTH_HOST}/api/oauth/token`, {
+		method: "POST",
+		headers: {
+			...kimiDeviceHeaders(),
+			"Content-Type": "application/x-www-form-urlencoded",
+			Accept: "application/json",
+		},
+		body: new URLSearchParams({
+			client_id: KIMI_CLIENT_ID,
+			grant_type: "refresh_token",
+			refresh_token: refreshToken,
+		}).toString(),
+	});
+	if (!response.ok) {
+		throw new Error(`Kimi token refresh failed (${response.status}).`);
+	}
+	const data = (await response.json()) as {
+		access_token: string;
+		refresh_token?: string;
+		expires_in: number;
+	};
+	if (!data.access_token || !data.expires_in) {
+		throw new Error("Kimi token refresh response was incomplete.");
+	}
+	return {
+		accessToken: data.access_token,
+		refreshToken: data.refresh_token ?? refreshToken,
+		expiresAt: Date.now() + data.expires_in * 1000,
+		baseURL: KIMI_CODE_BASE_URL,
+	};
+}
+
+async function refreshProvider(
+	provider: OAuthProviderId,
+	refreshToken: string,
+): Promise<ProviderOAuthCredential> {
+	if (provider === "openai") return refreshOpenAI(refreshToken);
+	if (provider === "anthropic") return refreshAnthropic(refreshToken);
+	return refreshKimi(refreshToken);
+}
+
+export async function refreshExpiredOAuthCredentials(
+	db: Database = getDatabase(),
+): Promise<void> {
+	for (const provider of [
+		"openai",
+		"anthropic",
+		"kimi",
+	] satisfies OAuthProviderId[]) {
+		const credential = getProviderOAuthCredential(provider, db);
+		if (!credential?.expires_at) continue;
+		if (credential.expires_at > Date.now() + TOKEN_REFRESH_SKEW_MS) continue;
+		if (!credential.refresh_token) {
+			deleteProviderOAuthCredential(provider, db);
+			continue;
+		}
+		try {
+			const refreshed = await refreshProvider(
+				provider,
+				credential.refresh_token,
+			);
+			saveProviderOAuthCredential(provider, refreshed, db);
+		} catch {
+			deleteProviderOAuthCredential(provider, db);
+		}
+	}
+}
+
 async function pollKimi(
 	row: OAuthStateRow,
 	db: Database,
@@ -423,6 +693,7 @@ async function pollKimi(
 	const response = await fetch(`${KIMI_OAUTH_HOST}/api/oauth/token`, {
 		method: "POST",
 		headers: {
+			...kimiDeviceHeaders(),
 			"Content-Type": "application/x-www-form-urlencoded",
 			Accept: "application/json",
 		},

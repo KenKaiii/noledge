@@ -32,6 +32,7 @@ type OAuthState = {
 	instructions: string;
 	code: string;
 	userCode?: string;
+	autoComplete: boolean;
 	saving: boolean;
 	error: string | null;
 };
@@ -163,6 +164,7 @@ export function ProvidersSection(): React.JSX.Element {
 					url: "",
 					instructions: "",
 					code: "",
+					autoComplete: false,
 					saving: false,
 					error: data.ok
 						? "Could not start OAuth login."
@@ -173,16 +175,19 @@ export function ProvidersSection(): React.JSX.Element {
 			const url =
 				data.mode === "code" ? data.authUrl : data.verificationUriComplete;
 			window.open(url, "_blank", "noopener,noreferrer");
+			const autoComplete = id === "openai" && data.mode === "code";
 			setOauth({
 				provider: id,
 				stateId: data.stateId,
 				mode: data.mode,
 				url,
-				instructions:
-					data.mode === "code"
+				instructions: autoComplete
+					? "Complete sign-in in the browser. noledge will connect OpenAI automatically when the callback returns."
+					: data.mode === "code"
 						? data.instructions
 						: "Sign in with Kimi using the code below, then click Complete.",
 				code: "",
+				autoComplete,
 				...(data.mode === "device" ? { userCode: data.userCode } : {}),
 				saving: false,
 				error: null,
@@ -195,6 +200,7 @@ export function ProvidersSection(): React.JSX.Element {
 				url: "",
 				instructions: "",
 				code: "",
+				autoComplete: false,
 				saving: false,
 				error:
 					error instanceof Error
@@ -241,6 +247,28 @@ export function ProvidersSection(): React.JSX.Element {
 			);
 		}
 	}, [load, oauth]);
+
+	useEffect(() => {
+		if (!oauth?.autoComplete) return;
+
+		const interval = window.setInterval(async () => {
+			try {
+				const response = await fetch("/api/providers");
+				const data = (await response.json()) as {
+					providers: ProviderStatus[];
+				};
+				setProviders(data.providers);
+				const provider = data.providers.find(
+					(item) => item.id === oauth.provider,
+				);
+				if (provider?.source === "oauth") setOauth(null);
+			} catch {
+				// Keep waiting; the callback server handles the actual OAuth result.
+			}
+		}, 1500);
+
+		return () => window.clearInterval(interval);
+	}, [oauth?.autoComplete, oauth?.provider]);
 
 	const remove = useCallback(async (id: string): Promise<void> => {
 		setRemoving(id);
@@ -395,7 +423,12 @@ export function ProvidersSection(): React.JSX.Element {
 										>
 											Open login page
 										</a>
-										{oauth.mode === "code" ? (
+										{oauth.autoComplete ? (
+											<div className="flex items-center gap-2 text-xs text-muted-foreground">
+												<CircleNotch className="size-3.5 animate-spin" />
+												Waiting for OpenAI callback…
+											</div>
+										) : oauth.mode === "code" ? (
 											<Input
 												value={oauth.code}
 												placeholder="Paste OAuth code or callback URL"
@@ -423,21 +456,23 @@ export function ProvidersSection(): React.JSX.Element {
 											>
 												Cancel
 											</Button>
-											<Button
-												size="sm"
-												type="button"
-												disabled={
-													oauth.saving ||
-													(oauth.mode === "code" &&
-														oauth.code.trim().length === 0)
-												}
-												onClick={() => void completeOAuth()}
-											>
-												{oauth.saving ? (
-													<CircleNotch className="size-4 animate-spin" />
-												) : null}
-												Complete login
-											</Button>
+											{oauth.autoComplete ? null : (
+												<Button
+													size="sm"
+													type="button"
+													disabled={
+														oauth.saving ||
+														(oauth.mode === "code" &&
+															oauth.code.trim().length === 0)
+													}
+													onClick={() => void completeOAuth()}
+												>
+													{oauth.saving ? (
+														<CircleNotch className="size-4 animate-spin" />
+													) : null}
+													Complete login
+												</Button>
+											)}
 										</div>
 										{oauth.error ? (
 											<p className="text-xs text-destructive">{oauth.error}</p>

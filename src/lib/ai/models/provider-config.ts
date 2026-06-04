@@ -136,7 +136,12 @@ export type ProviderOAuthCredential = {
 	baseURL?: string;
 };
 
-function oauthFor(provider: ProviderId, db: Database): OAuthRow | undefined {
+export type ProviderOAuthCredentialRow = OAuthRow;
+
+export function getProviderOAuthCredential(
+	provider: ProviderId,
+	db: Database = getDatabase(),
+): ProviderOAuthCredentialRow | undefined {
 	try {
 		const row = db
 			.prepare(
@@ -148,6 +153,10 @@ function oauthFor(provider: ProviderId, db: Database): OAuthRow | undefined {
 	} catch {
 		return undefined;
 	}
+}
+
+function oauthFor(provider: ProviderId, db: Database): OAuthRow | undefined {
+	return getProviderOAuthCredential(provider, db);
 }
 
 function localKeyFor(provider: ProviderId, db: Database): string | undefined {
@@ -239,6 +248,17 @@ export function saveProviderOAuthCredential(
 		credential.baseURL ?? null,
 		Date.now(),
 	);
+}
+
+/** Remove stored OAuth credentials. Returns true if a row was deleted. */
+export function deleteProviderOAuthCredential(
+	provider: ProviderId,
+	db: Database = getDatabase(),
+): boolean {
+	const info = db
+		.prepare("DELETE FROM provider_oauth_credentials WHERE provider = ?")
+		.run(provider);
+	return info.changes > 0;
 }
 
 /** Mask a key for display: keep the first 3 and last 4 characters. */

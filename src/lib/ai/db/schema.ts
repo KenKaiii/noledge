@@ -44,6 +44,12 @@ export function migrate(db: Database): void {
 			created_at INTEGER NOT NULL
 		);
 
+		CREATE TABLE IF NOT EXISTS app_settings (
+			key        TEXT PRIMARY KEY,
+			value      TEXT NOT NULL,
+			updated_at INTEGER NOT NULL
+		);
+	
 		CREATE TABLE IF NOT EXISTS provider_oauth_credentials (
 			provider      TEXT PRIMARY KEY,
 			access_token  TEXT NOT NULL,
@@ -105,6 +111,7 @@ export function migrate(db: Database): void {
 
 	addChunkSpanColumns(db);
 	addDocumentProvenanceColumns(db);
+	createDocumentDateIndex(db);
 	createChunksFts(db);
 }
 
@@ -117,6 +124,12 @@ export function migrate(db: Database): void {
  * that guards against re-ingesting the same `(source_id, external_id)` pair plus a
  * lookup index over content_hash.
  */
+function createDocumentDateIndex(db: Database): void {
+	db.exec(
+		"CREATE INDEX IF NOT EXISTS idx_documents_document_date ON documents(COALESCE(published_at, created_at), created_at)",
+	);
+}
+
 function addDocumentProvenanceColumns(db: Database): void {
 	const columns = db.prepare("PRAGMA table_info(documents)").all() as {
 		name: string;

@@ -1,6 +1,14 @@
 "use client";
 
-import { Gear, Monitor, Moon, Plug, Sun, User } from "@phosphor-icons/react";
+import {
+	CaretDown,
+	Gear,
+	Monitor,
+	Moon,
+	Plug,
+	Robot,
+	Sun,
+} from "@phosphor-icons/react";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -17,7 +25,7 @@ import { type Theme, useTheme } from "@/hooks/use-theme";
 import { cn } from "@/lib/utils";
 import { ProvidersSection } from "./providers-section";
 
-export type SettingsTab = "general" | "providers" | "account";
+export type SettingsTab = "general" | "providers" | "agent";
 
 type SettingsDialogProps = {
 	open: boolean;
@@ -34,8 +42,30 @@ const THEME_OPTIONS: { value: Theme; label: string; icon: typeof Sun }[] = [
 const TABS: { id: SettingsTab; label: string; icon: typeof Gear }[] = [
 	{ id: "general", label: "General", icon: Gear },
 	{ id: "providers", label: "Providers", icon: Plug },
-	{ id: "account", label: "Account", icon: User },
+	{ id: "agent", label: "Agent", icon: Robot },
 ];
+
+const RESPONSE_STYLE_OPTIONS = [
+	{ value: "default", label: "Default" },
+	{ value: "no-bullshit-to-the-point", label: "No bullsh*t, to the point" },
+	{ value: "easy-explainer", label: "Easy explainer" },
+] as const;
+
+type ResponseStyleValue = (typeof RESPONSE_STYLE_OPTIONS)[number]["value"];
+
+type LegacyResponseStyleValue =
+	| ResponseStyleValue
+	| "no-bullshit"
+	| "to-the-point";
+
+function normalizeResponseStyle(
+	value: LegacyResponseStyleValue | undefined,
+): ResponseStyleValue {
+	if (value === "no-bullshit" || value === "to-the-point") {
+		return "no-bullshit-to-the-point";
+	}
+	return value ?? "default";
+}
 
 export function SettingsDialog({
 	open,
@@ -49,6 +79,14 @@ export function SettingsDialog({
 	const [suggestionsText, setSuggestionsText] = useState(() =>
 		suggestions.join("\n"),
 	);
+	const [agentPrompt, setAgentPrompt] = useState("");
+	const [defaultAgentPrompt, setDefaultAgentPrompt] = useState("");
+	const [aboutUser, setAboutUser] = useState("");
+	const [responseStyle, setResponseStyle] =
+		useState<ResponseStyleValue>("default");
+	const [agentSaving, setAgentSaving] = useState(false);
+	const [agentError, setAgentError] = useState<string | null>(null);
+	const [agentSaved, setAgentSaved] = useState(false);
 
 	// Honor the requested tab each time the dialog is opened.
 	useEffect(() => {
@@ -59,12 +97,88 @@ export function SettingsDialog({
 		if (open) setSuggestionsText(suggestions.join("\n"));
 	}, [open, suggestions]);
 
+	useEffect(() => {
+		if (!open) return;
+
+		let cancelled = false;
+		async function loadAgentPrompt(): Promise<void> {
+			setAgentError(null);
+			try {
+				const response = await fetch("/api/settings/agent");
+				const data = (await response.json()) as {
+					systemPrompt?: string;
+					defaultSystemPrompt?: string;
+					aboutUser?: string;
+					responseStyle?: LegacyResponseStyleValue;
+					error?: string;
+				};
+				if (!response.ok)
+					throw new Error(data.error ?? "Could not load prompt.");
+				if (!cancelled) {
+					setAgentPrompt(data.systemPrompt ?? "");
+					setDefaultAgentPrompt(data.defaultSystemPrompt ?? "");
+					setAboutUser(data.aboutUser ?? "");
+					setResponseStyle(normalizeResponseStyle(data.responseStyle));
+					setAgentSaved(false);
+				}
+			} catch (error) {
+				if (!cancelled) {
+					setAgentError(
+						error instanceof Error ? error.message : "Could not load prompt.",
+					);
+				}
+			}
+		}
+
+		void loadAgentPrompt();
+		return () => {
+			cancelled = true;
+		};
+	}, [open]);
+
+	async function saveAgentSettings(nextPrompt: string | null): Promise<void> {
+		setAgentSaving(true);
+		setAgentError(null);
+		setAgentSaved(false);
+		try {
+			const response = await fetch("/api/settings/agent", {
+				method: "PUT",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					systemPrompt: nextPrompt,
+					aboutUser,
+					responseStyle,
+				}),
+			});
+			const data = (await response.json()) as {
+				systemPrompt?: string;
+				defaultSystemPrompt?: string;
+				aboutUser?: string;
+				responseStyle?: LegacyResponseStyleValue;
+				error?: string;
+			};
+			if (!response.ok)
+				throw new Error(data.error ?? "Could not save settings.");
+			setAgentPrompt(data.systemPrompt ?? "");
+			setDefaultAgentPrompt(data.defaultSystemPrompt ?? "");
+			setAboutUser(data.aboutUser ?? "");
+			setResponseStyle(normalizeResponseStyle(data.responseStyle));
+			setAgentSaved(true);
+		} catch (error) {
+			setAgentError(
+				error instanceof Error ? error.message : "Could not save settings.",
+			);
+		} finally {
+			setAgentSaving(false);
+		}
+	}
+
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="h-[calc(100%-2rem)] max-h-[720px] w-[calc(100%-2rem)] max-w-4xl overflow-hidden border-0 p-0 sm:max-w-4xl">
 				<DialogTitle className="sr-only">Settings</DialogTitle>
 				<DialogDescription className="sr-only">
-					Manage your general, provider, and account settings.
+					Manage your general, provider, and agent settings.
 				</DialogDescription>
 				<div className="flex h-full min-h-0">
 					{/* Left sidebar */}
@@ -176,30 +290,121 @@ export function SettingsDialog({
 								</div>
 							)}
 
-							{activeTab === "account" && (
+							{activeTab === "agent" && (
 								<div className="p-6">
-									<h2 className="mb-6 text-lg font-semibold">Account</h2>
-									<div className="space-y-0">
-										<div className="flex items-center justify-between py-4">
-											<div className="space-y-0.5">
-												<p className="text-sm font-medium">Email</p>
-												<p className="text-xs text-muted-foreground">
-													you@example.com
-												</p>
-											</div>
+									<h2 className="mb-6 text-lg font-semibold">Agent</h2>
+									<div className="space-y-4">
+										<div className="space-y-1">
+											<p className="text-sm font-medium">Main system prompt</p>
+											<p className="text-xs text-muted-foreground">
+												Adjust the stable system instructions used for new agent
+												responses.
+											</p>
 										</div>
+										<Textarea
+											value={agentPrompt}
+											onChange={(event) => {
+												setAgentPrompt(event.target.value);
+												setAgentSaved(false);
+												setAgentError(null);
+											}}
+											className="min-h-[280px] resize-y font-mono text-xs leading-relaxed"
+											placeholder="You are noledge..."
+										/>
+
 										<Separator />
-										<div className="flex items-center justify-between py-4">
-											<div className="space-y-0.5">
-												<p className="text-sm font-medium">Sign out</p>
+
+										<div className="space-y-2">
+											<div className="space-y-1">
+												<p className="text-sm font-medium">About you</p>
 												<p className="text-xs text-muted-foreground">
-													Log out of your account.
+													Optional context that helps the agent tailor responses
+													to you.
 												</p>
 											</div>
-											<Button variant="outline" size="sm" type="button">
-												Sign out
-											</Button>
+											<Textarea
+												value={aboutUser}
+												onChange={(event) => {
+													setAboutUser(event.target.value);
+													setAgentSaved(false);
+													setAgentError(null);
+												}}
+												className="min-h-28 resize-y text-sm"
+												placeholder={[
+													"- I work as a product designer",
+													"- I am learning TypeScript and AI tooling",
+													"- I am based in Singapore",
+												].join("\n")}
+											/>
 										</div>
+
+										<div className="space-y-2">
+											<div className="space-y-1">
+												<p className="text-sm font-medium">Response style</p>
+												<p className="text-xs text-muted-foreground">
+													Adjust how direct, brief, or explanatory responses
+													should be.
+												</p>
+											</div>
+											<div className="relative">
+												<select
+													value={responseStyle}
+													onChange={(event) => {
+														setResponseStyle(
+															event.target.value as ResponseStyleValue,
+														);
+														setAgentSaved(false);
+														setAgentError(null);
+													}}
+													className="h-9 w-full appearance-none rounded-md border border-input bg-background px-3 pr-9 text-sm outline-none transition-colors focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+												>
+													{RESPONSE_STYLE_OPTIONS.map((option) => (
+														<option key={option.value} value={option.value}>
+															{option.label}
+														</option>
+													))}
+												</select>
+												<CaretDown className="pointer-events-none absolute top-1/2 right-3 size-4 -translate-y-1/2 text-muted-foreground" />
+											</div>
+										</div>
+										<div className="flex items-center justify-between gap-3">
+											<div className="min-h-4 text-xs">
+												{agentError ? (
+													<span className="text-destructive">{agentError}</span>
+												) : agentSaved ? (
+													<span className="text-emerald-600 dark:text-emerald-400">
+														Saved. Future responses will use these settings.
+													</span>
+												) : null}
+											</div>
+											<div className="flex justify-end gap-2">
+												<Button
+													variant="outline"
+													size="sm"
+													type="button"
+													disabled={agentSaving}
+													onClick={() => void saveAgentSettings(null)}
+												>
+													Reset default
+												</Button>
+												<Button
+													size="sm"
+													type="button"
+													disabled={
+														agentSaving || agentPrompt.trim().length === 0
+													}
+													onClick={() => void saveAgentSettings(agentPrompt)}
+												>
+													Save settings
+												</Button>
+											</div>
+										</div>
+										{defaultAgentPrompt &&
+										agentPrompt !== defaultAgentPrompt ? (
+											<p className="text-xs text-muted-foreground">
+												This prompt differs from the noledge default.
+											</p>
+										) : null}
 									</div>
 								</div>
 							)}
