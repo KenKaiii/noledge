@@ -90,8 +90,6 @@ cd noledge
 npm install
 ```
 
-**3. Add at least one AI key**
-
 **3. Start it up**
 
 ```bash
