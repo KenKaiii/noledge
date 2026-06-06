@@ -67,6 +67,13 @@ type ClusterLabel = {
 // Largest clusters that stay labelled even in the zoomed-out overview, so the
 // map always has a few anchors to orient by.
 const ANCHOR_COUNT = 6;
+// Above this many nodes the graph is treated as "large": bloom and the
+// per-frame glow easing are disabled (static colours) so heavy geometry rebuilds
+// never run, and per-cluster centroid sampling is bounded.
+const LARGE_NODE_THRESHOLD = 600;
+// Cap how many node ids per cluster feed the centroid projection, so the label
+// loop stays cheap on big documents.
+const MAX_CENTROID_SAMPLES = 24;
 // Approximate text-xs metrics used to estimate a label's screen box for the
 // collision pass (avg glyph width + horizontal padding, line height).
 const CHAR_PX = 6.2;
@@ -221,6 +228,10 @@ export function BrainGraph({
 		[graph],
 	);
 
+	// Large graphs cannot afford per-frame geometry rebuilds (bloom + glow easing)
+	// or unbounded label sampling; switch to static colours and bounded work.
+	const isLarge = data.nodes.length > LARGE_NODE_THRESHOLD;
+
 	// onNodeHover fires on every pointer move over a node and intermittently
 	// reports null between frames, which made the highlight flicker. Ignore events
 	// that do not actually change the hovered node.
@@ -335,8 +346,9 @@ export function BrainGraph({
 		const fg = fgRef.current;
 		if (!fg || size.width === 0) return;
 		// Additive bloom only reads well on a dark canvas; on white it washes the
-		// whole scene out, so it is disabled in light mode.
-		if (!isDark) {
+		// whole scene out, so it is disabled in light mode. It is also disabled for
+		// large graphs, where the post-processing pass is too costly.
+		if (!isDark || isLarge) {
 			fg.refresh();
 			return;
 		}
@@ -353,7 +365,7 @@ export function BrainGraph({
 			composer.removePass(bloom);
 			bloom.dispose();
 		};
-	}, [size.width, size.height, isDark]);
+	}, [size.width, size.height, isDark, isLarge]);
 
 	// One-time layout setup: forces, controls, and initial framing. Kept out of
 	// the resize effect so collapsing the sidebar never reheats/re-scatters the
@@ -408,10 +420,17 @@ export function BrainGraph({
 	}, [size.width]);
 
 	// Animation loop: ease each node/link intensity toward its focus target and
-	// repaint, so hover highlight and fade-out glide instead of snapping.
+	// repaint, so hover highlight and fade-out glide instead of snapping. On large
+	// graphs this is disabled entirely (static colours via nodeColor/linkColor) so
+	// the per-frame fg.refresh() geometry rebuild never runs. On small graphs the
+	// loop idles itself once there is no focus and every intensity has eased to ~0,
+	// resuming on the next hover/selection.
+	// `focus` is intentionally a dependency though the loop reads focusRef: a new
+	// hover/selection must re-run this effect to wake the loop after it idled.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: focus re-arms the idled rAF loop
 	useEffect(() => {
 		const fg = fgRef.current;
-		if (!fg || size.width === 0) return;
+		if (!fg || size.width === 0 || isLarge) return;
 		let frame = 0;
 		const EASE = 0.18; // per-frame approach rate (~120ms settle at 60fps)
 		const tick = (): void => {
@@ -419,6 +438,7 @@ export function BrainGraph({
 			const nodeMap = nodeIntensity.current;
 			const linkMap = linkIntensity.current;
 			let changed = false;
+			let active = currentFocus != null; // any non-resting target keeps us awake
 
 			for (const node of data.nodes) {
 				const id = String(node.id);
@@ -426,6 +446,7 @@ export function BrainGraph({
 				const prev = nodeMap.get(id) ?? 0;
 				const next = prev + (target - prev) * EASE;
 				if (Math.abs(next - prev) > 0.001) changed = true;
+				if (Math.abs(next) > 0.001) active = true;
 				nodeMap.set(id, next);
 			}
 
@@ -434,15 +455,19 @@ export function BrainGraph({
 				const prev = linkMap.get(link) ?? 0;
 				const next = prev + (target - prev) * EASE;
 				if (Math.abs(next - prev) > 0.001) changed = true;
+				if (Math.abs(next) > 0.001) active = true;
 				linkMap.set(link, next);
 			}
 
 			if (changed) fg.refresh();
+			// Idle once everything has settled to rest with no focus; the next
+			// hover/selection re-runs this effect (focus is a dependency) and wakes it.
+			if (!active) return;
 			frame = requestAnimationFrame(tick);
 		};
 		frame = requestAnimationFrame(tick);
 		return () => cancelAnimationFrame(frame);
-	}, [data, size.width]);
+	}, [data, size.width, isLarge, focus]);
 
 	// Project each cluster centroid to screen space every frame so the labels
 	// track the constellation as it settles, rotates, or zooms.
@@ -456,6 +481,29 @@ export function BrainGraph({
 		);
 		let frame = 0;
 		let prev: ClusterLabel[] = [];
+		// Last camera transform + focus state; the projection only changes when one of
+		// these does, so we skip the expensive graph2ScreenCoords pass otherwise.
+		let lastSig = "";
+		// Precompute a bounded sample of node ids per cluster so the centroid pass is
+		// O(clusters · MAX_CENTROID_SAMPLES) rather than O(nodes), even at 100k.
+		const sampled = clusters.map((cluster) => ({
+			documentId: cluster.documentId,
+			title: cluster.title,
+			nodeIds:
+				cluster.nodeIds.length <= MAX_CENTROID_SAMPLES
+					? cluster.nodeIds
+					: Array.from(
+							{ length: MAX_CENTROID_SAMPLES },
+							(_, i) =>
+								cluster.nodeIds[
+									Math.floor(
+										(i * cluster.nodeIds.length) / MAX_CENTROID_SAMPLES,
+									)
+								] ??
+								cluster.nodeIds[0] ??
+								"",
+						),
+		}));
 		// Skip the React update unless a label actually moved or toggled, so the
 		// overlay stops re-rendering once the simulation settles.
 		const changedEnough = (a: ClusterLabel[], b: ClusterLabel[]): boolean => {
@@ -480,6 +528,20 @@ export function BrainGraph({
 			// Overview vs zoomed-in: while far out (near the fitted distance) only
 			// anchor + focused labels show; zooming in reveals the rest.
 			const cam = fg.camera();
+			// Skip the whole projection when nothing that affects label positions has
+			// changed since last frame: the camera, the focused cluster, or — while the
+			// simulation is still settling — a sampled node's live position.
+			const probe = nodeById.get(sampled[0]?.nodeIds[0] ?? "");
+			const sig = `${cam.position.x.toFixed(1)},${cam.position.y.toFixed(
+				1,
+			)},${cam.position.z.toFixed(1)}|${hoveredDocRef.current ?? ""}|${(
+				probe?.x ?? 0
+			).toFixed(1)},${(probe?.y ?? 0).toFixed(1)}`;
+			if (sig === lastSig) {
+				frame = requestAnimationFrame(tick);
+				return;
+			}
+			lastSig = sig;
 			const distance = Math.hypot(
 				cam.position.x,
 				cam.position.y,
@@ -501,7 +563,7 @@ export function BrainGraph({
 				isFocused: boolean;
 			};
 			const candidates: Candidate[] = [];
-			for (const cluster of clusters) {
+			for (const cluster of sampled) {
 				let sx = 0;
 				let sy = 0;
 				let count = 0;
@@ -573,6 +635,14 @@ export function BrainGraph({
 		frame = requestAnimationFrame(tick);
 		return () => cancelAnimationFrame(frame);
 	}, [clusters, anchorIds, data.nodes, docColors, size.width, size.height]);
+
+	// Document super-nodes carry a chunk count in `size`; scale radius by its cube
+	// root so volume tracks size without dwarfing small documents. Chunk nodes
+	// (size 1) keep the original constant radius.
+	const nodeVal = useCallback(
+		(node: GraphNode): number => 1.5 * Math.cbrt(Math.max(1, node.size)),
+		[],
+	);
 
 	const nodeColor = useCallback(
 		(node: GraphNode): string => {
@@ -719,10 +789,10 @@ export function BrainGraph({
 					`<div style="max-width:260px"><strong>${escapeHtml(node.documentTitle)}</strong> · #${node.ordinal}<br/>${escapeHtml(node.preview)}</div>`
 				}
 				nodeColor={nodeColor}
-				nodeVal={1.5}
+				nodeVal={nodeVal}
 				nodeRelSize={4}
 				nodeOpacity={0.95}
-				nodeResolution={16}
+				nodeResolution={isLarge ? 8 : 16}
 				linkColor={linkColor}
 				linkWidth={linkWidth}
 				linkOpacity={0.5}

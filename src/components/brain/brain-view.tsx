@@ -22,7 +22,7 @@ export function BrainView(): React.JSX.Element {
 			const data = (await response.json()) as BrainGraph;
 			setGraph(data);
 		} catch {
-			setGraph({ nodes: [], links: [], documentCount: 0 });
+			setGraph({ nodes: [], links: [], documentCount: 0, level: "chunk" });
 		} finally {
 			setLoading(false);
 		}
@@ -61,8 +61,9 @@ export function BrainView(): React.JSX.Element {
 					The Brain
 				</h1>
 				<p className="text-xs text-muted-foreground">
-					{graph.nodes.length} idea sparks · {graph.links.length} links ·{" "}
-					{graph.documentCount} source
+					{graph.nodes.length}{" "}
+					{graph.level === "document" ? "documents" : "idea sparks"} ·{" "}
+					{graph.links.length} links · {graph.documentCount} source
 					{graph.documentCount === 1 ? "" : "s"}
 				</p>
 			</div>

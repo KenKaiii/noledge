@@ -2,8 +2,10 @@ import type { Database } from "better-sqlite3";
 import { getDatabase } from "@/lib/ai/db/client";
 
 /**
- * A node is a single chunk — the smallest unit of knowledge the brain holds.
- * Grouping is by `documentId` so the view can colour fragments by their source.
+ * A node is either a single chunk (the smallest unit of knowledge the brain
+ * holds) or — for large libraries — a whole document aggregated into one
+ * super-node. `level` on the graph says which. Grouping is by `documentId` so
+ * the view can colour fragments by their source.
  */
 export type BrainNode = {
 	id: string;
@@ -11,6 +13,8 @@ export type BrainNode = {
 	documentTitle: string;
 	ordinal: number;
 	preview: string;
+	/** Chunk count for a document super-node; 1 for a chunk node. Drives radius. */
+	size: number;
 };
 
 /**
@@ -28,6 +32,8 @@ export type BrainGraph = {
 	nodes: BrainNode[];
 	links: BrainLink[];
 	documentCount: number;
+	/** Granularity of the returned nodes: per-chunk or per-document super-nodes. */
+	level: "chunk" | "document";
 };
 
 export type BuildBrainGraphOptions = {
@@ -36,7 +42,24 @@ export type BuildBrainGraphOptions = {
 	minSimilarity?: number;
 	/** Maximum edges retained per node, keeping the strongest. */
 	maxDegree?: number;
+	/**
+	 * Override the chunk→document level-of-detail threshold. Above this many
+	 * chunks the graph aggregates per document instead of per chunk. Mainly for
+	 * tests; production uses the default.
+	 */
+	chunkLodThreshold?: number;
 };
+
+/**
+ * Above this many chunks the per-chunk view is abandoned for a per-document
+ * super-node view — no 3D force-graph renders 100k interactive nodes. Below it,
+ * the detailed chunk view (with sqlite-vec KNN edges) stays fast.
+ */
+export const CHUNK_LOD_THRESHOLD = 1500;
+/** Hard cap on returned nodes regardless of level — a final safety valve. */
+export const MAX_NODES = 2000;
+const DEFAULT_MIN_SIMILARITY = 0.6;
+const DEFAULT_MAX_DEGREE = 6;
 
 type ChunkRow = {
 	id: string;
@@ -44,6 +67,12 @@ type ChunkRow = {
 	document_title: string;
 	ordinal: number;
 	content: string;
+	embedding: Buffer;
+};
+
+type DocChunkRow = {
+	document_id: string;
+	document_title: string;
 	embedding: Buffer;
 };
 
@@ -84,28 +113,104 @@ function edgeKey(a: string, b: string): string {
 }
 
 /**
- * Build the knowledge graph for "The Brain". Every chunk across every document
- * is a node. Connections form two ways:
+ * Cheap signature of the corpus: any insert or delete moves at least one of
+ * these, so a matching signature means the built graph is still valid.
+ */
+type CorpusSignature = {
+	chunkCount: number;
+	documentCount: number;
+	maxRowid: number;
+	minSimilarity: number;
+	maxDegree: number;
+	chunkLodThreshold: number;
+};
+
+function corpusSignature(
+	db: Database,
+	minSimilarity: number,
+	maxDegree: number,
+	chunkLodThreshold: number,
+): CorpusSignature {
+	const row = db
+		.prepare(
+			`SELECT
+				(SELECT COUNT(*) FROM chunks)                  AS chunkCount,
+				(SELECT COUNT(*) FROM documents)               AS documentCount,
+				(SELECT COALESCE(MAX(rowid), 0) FROM chunks)   AS maxRowid`,
+		)
+		.get() as { chunkCount: number; documentCount: number; maxRowid: number };
+	return {
+		chunkCount: row.chunkCount,
+		documentCount: row.documentCount,
+		maxRowid: row.maxRowid,
+		minSimilarity,
+		maxDegree,
+		chunkLodThreshold,
+	};
+}
+
+function signaturesEqual(a: CorpusSignature, b: CorpusSignature): boolean {
+	return (
+		a.chunkCount === b.chunkCount &&
+		a.documentCount === b.documentCount &&
+		a.maxRowid === b.maxRowid &&
+		a.minSimilarity === b.minSimilarity &&
+		a.maxDegree === b.maxDegree &&
+		a.chunkLodThreshold === b.chunkLodThreshold
+	);
+}
+
+// Module-level memo keyed by the corpus signature. Ingest/delete change the
+// signature, so the cache self-invalidates without explicit wiring.
+let cache: { signature: CorpusSignature; graph: BrainGraph } | null = null;
+
+/**
+ * Build the knowledge graph for "The Brain", adapting granularity to corpus
+ * size. The built graph is memoized on a cheap corpus signature so revisiting
+ * the view does not rebuild it.
  *
- *  1. Sequence — consecutive chunks of a document are linked, so even a single
- *     upload appears as a connected train of thought rather than loose dots.
- *  2. Semantic — any two chunks whose embeddings exceed `minSimilarity` are
- *     linked, which is how separate documents fuse into one brain wherever their
- *     ideas overlap.
- *
- * Semantic edges are scored strongest-first and thinned so each node keeps at
- * most `maxDegree` connections, preventing a hairball while preserving clusters.
- *
- * Note: pairwise scoring is O(n²) over chunks; fine for a local single-user
- * library. Revisit with an ANN index if chunk counts reach tens of thousands.
+ *  - Small libraries (≤ `CHUNK_LOD_THRESHOLD` chunks) get the detailed chunk
+ *    view: a sequence backbone plus semantic edges from sqlite-vec KNN.
+ *  - Large libraries collapse to one super-node per document, with semantic
+ *    edges between document centroids — the only thing that scales to 100k+.
  */
 export function buildBrainGraph(
 	options: BuildBrainGraphOptions = {},
 ): BrainGraph {
 	const db = options.db ?? getDatabase();
-	const minSimilarity = options.minSimilarity ?? 0.6;
-	const maxDegree = options.maxDegree ?? 6;
+	const minSimilarity = options.minSimilarity ?? DEFAULT_MIN_SIMILARITY;
+	const maxDegree = options.maxDegree ?? DEFAULT_MAX_DEGREE;
+	const chunkLodThreshold = options.chunkLodThreshold ?? CHUNK_LOD_THRESHOLD;
 
+	const signature = corpusSignature(
+		db,
+		minSimilarity,
+		maxDegree,
+		chunkLodThreshold,
+	);
+	if (cache && signaturesEqual(cache.signature, signature)) {
+		return cache.graph;
+	}
+
+	const graph =
+		signature.chunkCount > chunkLodThreshold
+			? buildDocumentGraph(db, minSimilarity, maxDegree)
+			: buildChunkGraph(db, minSimilarity, maxDegree);
+
+	cache = { signature, graph };
+	return graph;
+}
+
+/**
+ * Detailed per-chunk view. Every chunk is a node; consecutive chunks of a
+ * document form a sequence backbone, and semantic edges come from sqlite-vec
+ * KNN (native C scan) rather than a JS O(n²) pairwise loop.
+ */
+function buildChunkGraph(
+	db: Database,
+	minSimilarity: number,
+	maxDegree: number,
+): BrainGraph {
 	const rows = db
 		.prepare(
 			`SELECT
@@ -123,7 +228,7 @@ export function buildBrainGraph(
 		.all() as ChunkRow[];
 
 	if (rows.length === 0) {
-		return { nodes: [], links: [], documentCount: 0 };
+		return { nodes: [], links: [], documentCount: 0, level: "chunk" };
 	}
 
 	const nodes: BrainNode[] = rows.map((row) => ({
@@ -132,9 +237,8 @@ export function buildBrainGraph(
 		documentTitle: row.document_title,
 		ordinal: row.ordinal,
 		preview: previewOf(row.content),
+		size: 1,
 	}));
-
-	const vectors = rows.map((row) => normalized(blobToVector(row.embedding)));
 
 	const links: BrainLink[] = [];
 	const seen = new Set<string>();
@@ -160,22 +264,32 @@ export function buildBrainGraph(
 		bump(curr.id);
 	}
 
-	// 2. Semantic edges: score every distinct pair, keep those above the floor.
+	// 2. Semantic edges via KNN: for each chunk, ask sqlite-vec for its nearest
+	//    neighbours and keep those above the similarity floor. KNN is asymmetric,
+	//    so canonicalize/dedupe pairs with edgeKey + seen.
+	const knn = db.prepare(
+		`SELECT v.chunk_id AS chunk_id, v.distance AS distance
+		FROM vec_chunks v
+		WHERE v.embedding MATCH ? AND k = ?
+		ORDER BY v.distance`,
+	);
 	const candidates: BrainLink[] = [];
-	for (let i = 0; i < vectors.length; i += 1) {
-		const a = vectors[i];
-		const nodeA = nodes[i];
-		if (!a || !nodeA) continue;
-		for (let j = i + 1; j < vectors.length; j += 1) {
-			const b = vectors[j];
-			const nodeB = nodes[j];
-			if (!b || !nodeB) continue;
-			if (seen.has(edgeKey(nodeA.id, nodeB.id))) continue;
-			const weight = dot(a, b);
+	const k = maxDegree + 1; // +1 so the chunk's own (distance 0) hit can be skipped
+	for (const row of rows) {
+		const neighbors = knn.all(row.embedding, k) as {
+			chunk_id: string;
+			distance: number;
+		}[];
+		for (const neighbor of neighbors) {
+			if (neighbor.chunk_id === row.id) continue;
+			const key = edgeKey(row.id, neighbor.chunk_id);
+			if (seen.has(key)) continue;
+			seen.add(key);
+			const weight = 1 - neighbor.distance; // cosine distance → similarity
 			if (weight >= minSimilarity) {
 				candidates.push({
-					source: nodeA.id,
-					target: nodeB.id,
+					source: row.id,
+					target: neighbor.chunk_id,
 					weight,
 					kind: "semantic",
 				});
@@ -194,5 +308,120 @@ export function buildBrainGraph(
 	}
 
 	const documentCount = new Set(rows.map((row) => row.document_id)).size;
-	return { nodes, links, documentCount };
+	return { nodes, links, documentCount, level: "chunk" };
+}
+
+type DocAccumulator = {
+	documentId: string;
+	documentTitle: string;
+	sum: Float32Array;
+	count: number;
+};
+
+/**
+ * Aggregated per-document view for large libraries. One node per document sized
+ * by its chunk count; semantic edges connect documents whose normalized
+ * centroid embeddings are similar. Sequence edges are dropped — they are not
+ * meaningful between whole documents.
+ */
+function buildDocumentGraph(
+	db: Database,
+	minSimilarity: number,
+	maxDegree: number,
+): BrainGraph {
+	const rows = db
+		.prepare(
+			`SELECT
+				c.document_id AS document_id,
+				d.title       AS document_title,
+				v.embedding   AS embedding
+			FROM chunks c
+			JOIN documents d ON d.id = c.document_id
+			JOIN vec_chunks v ON v.chunk_id = c.id
+			ORDER BY d.created_at ASC, c.ordinal ASC`,
+		)
+		.iterate() as IterableIterator<DocChunkRow>;
+
+	// Single linear pass: accumulate a centroid (vector sum) and chunk count per
+	// document. Insertion order tracks document order (rows are created_at sorted).
+	const byDoc = new Map<string, DocAccumulator>();
+	for (const row of rows) {
+		const vector = blobToVector(row.embedding);
+		let acc = byDoc.get(row.document_id);
+		if (!acc) {
+			acc = {
+				documentId: row.document_id,
+				documentTitle: row.document_title,
+				sum: new Float32Array(vector.length),
+				count: 0,
+			};
+			byDoc.set(row.document_id, acc);
+		}
+		for (let i = 0; i < vector.length; i += 1) {
+			acc.sum[i] = (acc.sum[i] ?? 0) + (vector[i] ?? 0);
+		}
+		acc.count += 1;
+	}
+
+	if (byDoc.size === 0) {
+		return { nodes: [], links: [], documentCount: 0, level: "document" };
+	}
+
+	// Largest documents first, capped — they anchor the map and bound the work.
+	const docs = [...byDoc.values()]
+		.sort((a, b) => b.count - a.count)
+		.slice(0, MAX_NODES);
+
+	const centroids = docs.map((doc) => normalized(doc.sum));
+	const nodes: BrainNode[] = docs.map((doc) => ({
+		id: doc.documentId,
+		documentId: doc.documentId,
+		documentTitle: doc.documentTitle,
+		ordinal: 0,
+		preview: `${doc.documentTitle} · ${doc.count} chunk${
+			doc.count === 1 ? "" : "s"
+		}`,
+		size: doc.count,
+	}));
+
+	const links: BrainLink[] = [];
+	const seen = new Set<string>();
+	const degree = new Map<string, number>();
+
+	// Inter-document semantic edges. The document set is small relative to chunk
+	// count, so bounded pairwise over centroids is cheap and exact.
+	const candidates: BrainLink[] = [];
+	for (let i = 0; i < docs.length; i += 1) {
+		const a = centroids[i];
+		const docA = docs[i];
+		if (!a || !docA) continue;
+		for (let j = i + 1; j < docs.length; j += 1) {
+			const b = centroids[j];
+			const docB = docs[j];
+			if (!b || !docB) continue;
+			const weight = dot(a, b);
+			if (weight >= minSimilarity) {
+				candidates.push({
+					source: docA.documentId,
+					target: docB.documentId,
+					weight,
+					kind: "semantic",
+				});
+			}
+		}
+	}
+
+	candidates.sort((x, y) => y.weight - x.weight);
+	for (const link of candidates) {
+		if ((degree.get(link.source) ?? 0) >= maxDegree) continue;
+		if ((degree.get(link.target) ?? 0) >= maxDegree) continue;
+		const key = edgeKey(link.source, link.target);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		links.push(link);
+		degree.set(link.source, (degree.get(link.source) ?? 0) + 1);
+		degree.set(link.target, (degree.get(link.target) ?? 0) + 1);
+	}
+
+	return { nodes, links, documentCount: byDoc.size, level: "document" };
 }
