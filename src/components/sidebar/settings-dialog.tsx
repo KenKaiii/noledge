@@ -3,6 +3,7 @@
 import {
 	CaretDown,
 	Gear,
+	MagnifyingGlass,
 	Monitor,
 	Moon,
 	Plug,
@@ -25,8 +26,9 @@ import { type Theme, useTheme } from "@/hooks/use-theme";
 import { notifyError, notifySuccess } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { ProvidersSection } from "./providers-section";
+import { RetrievalSection } from "./retrieval-section";
 
-export type SettingsTab = "general" | "providers" | "agent";
+export type SettingsTab = "general" | "providers" | "agent" | "retrieval";
 
 type SettingsDialogProps = {
 	open: boolean;
@@ -44,6 +46,7 @@ const TABS: { id: SettingsTab; label: string; icon: typeof Gear }[] = [
 	{ id: "general", label: "General", icon: Gear },
 	{ id: "providers", label: "Providers", icon: Plug },
 	{ id: "agent", label: "Agent", icon: Robot },
+	{ id: "retrieval", label: "Retrieval", icon: MagnifyingGlass },
 ];
 
 const RESPONSE_STYLE_OPTIONS = [
@@ -276,6 +279,13 @@ export function SettingsDialog({
 								<div className="animate-fade-in p-6">
 									<h2 className="mb-6 text-lg font-semibold">Providers</h2>
 									<ProvidersSection />
+								</div>
+							)}
+
+							{activeTab === "retrieval" && (
+								<div className="animate-fade-in p-6">
+									<h2 className="mb-6 text-lg font-semibold">Retrieval</h2>
+									<RetrievalSection />
 								</div>
 							)}
 

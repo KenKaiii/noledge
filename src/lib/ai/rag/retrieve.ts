@@ -4,7 +4,11 @@ import { embedTexts, toVectorBlob } from "@/lib/ai/embeddings/embed";
 import type { Embedder } from "./ingest";
 import { keywordSearch } from "./keyword";
 import { mmrRerank } from "./mmr";
-import { identityReranker, type Reranker } from "./rerank";
+import {
+	getConfiguredReranker,
+	identityReranker,
+	type Reranker,
+} from "./rerank";
 
 export type RetrievedChunk = {
 	chunkId: string;
@@ -66,6 +70,8 @@ export type RetrieveOptions = {
 
 const DEFAULT_TOP_K = 5;
 const DEFAULT_MIN_SCORE = 0.3;
+/** Candidate pool size handed to a real reranker before MMR/top-k slicing. */
+const RERANK_POOL_SIZE = 30;
 const DEFAULT_VECTOR_WEIGHT = 0.7;
 const DEFAULT_TEXT_WEIGHT = 0.3;
 
@@ -155,7 +161,7 @@ export async function retrieveChunks(
 	const topK = options.topK ?? DEFAULT_TOP_K;
 	const hybrid = options.hybrid ?? true;
 	const useMmr = options.mmr ?? true;
-	const reranker = options.reranker ?? identityReranker;
+	const reranker = options.reranker ?? getConfiguredReranker(options.db);
 
 	const minScore =
 		options.maxDistance !== undefined
@@ -299,19 +305,9 @@ export async function retrieveChunks(
 			.filter((entry) => entry.score >= minScore)
 			.sort((a, b) => b.score - a.score);
 
-		// MMR diversity pass over survivors, then slice to topK.
-		const selected = useMmr
-			? mmrRerank(
-					scored.map((entry) => ({
-						score: entry.score,
-						content: entry.candidate.content,
-						entry,
-					})),
-					{ limit: topK },
-				).map((item) => item.entry)
-			: scored.slice(0, topK);
+		type ScoredEntry = (typeof scored)[number];
 
-		const chunks: RetrievedChunk[] = selected.map((entry) => ({
+		const toRetrievedChunk = (entry: ScoredEntry): RetrievedChunk => ({
 			chunkId: entry.candidate.chunkId,
 			documentId: entry.candidate.documentId,
 			documentTitle: entry.candidate.documentTitle,
@@ -327,10 +323,49 @@ export async function retrieveChunks(
 				? { documentPublishedAt: entry.candidate.publishedAt }
 				: {}),
 			documentDate: entry.candidate.documentDate,
-		}));
+		});
 
-		const reranked = await reranker(trimmed, chunks, options.signal);
-		return { ok: true, chunks: reranked };
+		const sliceFinal = (entries: ScoredEntry[]): ScoredEntry[] =>
+			useMmr
+				? mmrRerank(
+						entries.map((entry) => ({
+							score: entry.score,
+							content: entry.candidate.content,
+							entry,
+						})),
+						{ limit: topK },
+					).map((item) => item.entry)
+				: entries.slice(0, topK);
+
+		// When a real reranker is active, rerank the larger candidate pool first so a
+		// strong passage outside the naive top-k can be promoted, then MMR/slice over
+		// the reranked order. The identity (default) path stays byte-for-byte
+		// identical to today: MMR/slice the fused order directly.
+		if (reranker !== identityReranker) {
+			const pool = scored.slice(0, Math.min(RERANK_POOL_SIZE, scored.length));
+			const poolChunks = pool.map(toRetrievedChunk);
+			const rerankedPool = await reranker(trimmed, poolChunks, options.signal);
+
+			// Map reranked chunks back to scored entries, applying the rerank score.
+			const byChunkId = new Map(
+				pool.map((entry) => [entry.candidate.chunkId, entry]),
+			);
+			const rerankedEntries: ScoredEntry[] = [];
+			for (const chunk of rerankedPool) {
+				const entry = byChunkId.get(chunk.chunkId);
+				if (!entry) continue;
+				rerankedEntries.push({
+					candidate: entry.candidate,
+					score: chunk.score,
+				});
+			}
+
+			const selected = sliceFinal(rerankedEntries);
+			return { ok: true, chunks: selected.map(toRetrievedChunk) };
+		}
+
+		const selected = sliceFinal(scored);
+		return { ok: true, chunks: selected.map(toRetrievedChunk) };
 	} catch (error) {
 		return {
 			ok: false,

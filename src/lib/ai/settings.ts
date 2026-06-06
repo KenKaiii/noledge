@@ -4,7 +4,10 @@ import { getDatabase } from "@/lib/ai/db/client";
 export type AppSettingKey =
 	| "agent.systemPrompt"
 	| "agent.aboutUser"
-	| "agent.responseStyle";
+	| "agent.responseStyle"
+	| "rag.rerankEnabled"
+	| "rag.rerankApiKey"
+	| "rag.rerankModel";
 
 export function getAppSetting(
 	key: AppSettingKey,
