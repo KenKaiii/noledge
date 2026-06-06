@@ -40,9 +40,10 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# Local scratch artifacts
-.gg/screenshots/
-.gg/plans/
+# agent tooling / scratch artifacts
+.gg/
+AGENTS.md
+CLAUDE.md
 
 # tesseract.js OCR language data (downloaded at runtime)
 *.traineddata
