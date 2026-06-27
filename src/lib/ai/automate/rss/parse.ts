@@ -1,4 +1,5 @@
 import { XMLParser } from "fast-xml-parser";
+import { safeFetch } from "@/lib/ai/net/ssrf";
 import { normalizeText } from "@/lib/ai/rag/normalize";
 import { type Attempt, isTransientStatus, withRetry } from "../retry";
 import { decodeBody } from "./decode";
@@ -266,7 +267,6 @@ async function fetchFeedOnce(
 	url: string,
 	options: FetchFeedOptions,
 ): Promise<Attempt<FetchFeedResult>> {
-	const fetchFn = options.fetchFn ?? fetch;
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 	if (options.signal) {
@@ -275,7 +275,7 @@ async function fetchFeedOnce(
 		});
 	}
 	try {
-		const response = await fetchFn(url, {
+		const response = await safeFetch(url, {
 			headers: {
 				Accept:
 					"application/rss+xml, application/atom+xml, application/xml, text/xml; q=0.9, */*; q=0.8",
@@ -286,6 +286,7 @@ async function fetchFeedOnce(
 					: {}),
 			},
 			signal: controller.signal,
+			...(options.fetchFn ? { fetchImpl: options.fetchFn } : {}),
 		});
 		if (response.status === 304) {
 			return { value: { ok: true, notModified: true }, retry: false };

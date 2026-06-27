@@ -1,4 +1,5 @@
 import type { Database } from "better-sqlite3";
+import { decryptSecret, encryptSecret } from "@/lib/ai/crypto/secrets";
 import { getDatabase } from "@/lib/ai/db/client";
 import { getEnv } from "@/lib/ai/env";
 import type { ProviderId } from "./types";
@@ -149,7 +150,12 @@ export function getProviderOAuthCredential(
 			)
 			.get(provider) as OAuthRow | undefined;
 		if (!row?.access_token) return undefined;
-		return row;
+		return {
+			...row,
+			access_token: decryptSecret(row.access_token),
+			refresh_token:
+				row.refresh_token === null ? null : decryptSecret(row.refresh_token),
+		};
 	} catch {
 		return undefined;
 	}
@@ -164,7 +170,7 @@ function localKeyFor(provider: ProviderId, db: Database): string | undefined {
 		const row = db
 			.prepare("SELECT api_key FROM provider_keys WHERE provider = ?")
 			.get(provider) as KeyRow | undefined;
-		return row?.api_key;
+		return row?.api_key === undefined ? undefined : decryptSecret(row.api_key);
 	} catch {
 		return undefined;
 	}
@@ -211,7 +217,7 @@ export function saveProviderKey(
 		`INSERT INTO provider_keys (provider, api_key, created_at)
 		 VALUES (?, ?, ?)
 		 ON CONFLICT(provider) DO UPDATE SET api_key = excluded.api_key, created_at = excluded.created_at`,
-	).run(provider, apiKey, Date.now());
+	).run(provider, encryptSecret(apiKey), Date.now());
 }
 
 /** Remove a user-provided key. Returns true if a row was deleted. */
@@ -242,8 +248,8 @@ export function saveProviderOAuthCredential(
 			created_at = excluded.created_at`,
 	).run(
 		provider,
-		credential.accessToken,
-		credential.refreshToken ?? null,
+		encryptSecret(credential.accessToken),
+		credential.refreshToken ? encryptSecret(credential.refreshToken) : null,
 		credential.expiresAt ?? null,
 		credential.baseURL ?? null,
 		Date.now(),

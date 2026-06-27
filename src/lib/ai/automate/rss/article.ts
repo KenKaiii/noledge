@@ -1,5 +1,6 @@
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
+import { safeFetch } from "@/lib/ai/net/ssrf";
 import { normalizeText } from "@/lib/ai/rag/normalize";
 import { type Attempt, isTransientStatus, withRetry } from "../retry";
 import { decodeBody } from "./decode";
@@ -78,7 +79,6 @@ async function fetchArticleTextOnce(
 	url: string,
 	options: { fetchFn?: typeof fetch; signal?: AbortSignal },
 ): Promise<Attempt<ArticleResult>> {
-	const fetchFn = options.fetchFn ?? fetch;
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 	if (options.signal) {
@@ -87,13 +87,13 @@ async function fetchArticleTextOnce(
 		});
 	}
 	try {
-		const response = await fetchFn(url, {
+		const response = await safeFetch(url, {
 			headers: {
 				Accept: "text/html, application/xhtml+xml, */*; q=0.8",
 				"User-Agent": "noledge-automation/1.0 (+feed-poller)",
 			},
-			redirect: "follow",
 			signal: controller.signal,
+			...(options.fetchFn ? { fetchImpl: options.fetchFn } : {}),
 		});
 		if (!response.ok) {
 			return {

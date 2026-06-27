@@ -15,57 +15,34 @@ const TIMEOUT_MS = 30_000;
 let ytdlpPath: string | null = null;
 
 /**
- * Locate the yt-dlp binary on the system. On first call, checks PATH via
- * `which`; if missing, attempts auto-install via pip3 then brew. The result is
+ * Locate the yt-dlp binary on the system via `which`. Throws if it is not
+ * installed — there is no auto-install (see note inside). The resolved path is
  * cached for the process lifetime.
  */
 export async function ensureYtdlp(): Promise<string> {
 	if (ytdlpPath) return ytdlpPath;
 
-	// Fast path: already on PATH.
+	// Look for an existing yt-dlp on PATH. We deliberately do NOT auto-install:
+	// a request handler installing packages from the network (pip/brew) is a
+	// supply-chain and least-privilege hazard, especially since the app ships
+	// without authentication. If yt-dlp is missing, the caller treats it as a
+	// skip and the operator installs it themselves.
 	try {
 		const { stdout } = await execFileAsync("which", ["yt-dlp"], {
 			timeout: 5_000,
 		});
-		ytdlpPath = stdout.trim();
-		return ytdlpPath;
+		const resolved = stdout.trim();
+		if (resolved) {
+			ytdlpPath = resolved;
+			return ytdlpPath;
+		}
 	} catch {
-		// Not found — attempt auto-install.
-	}
-
-	// Attempt pip3 install.
-	try {
-		console.log("[ytdlp] yt-dlp not found; installing via pip3...");
-		await execFileAsync("pip3", ["install", "--user", "yt-dlp"], {
-			timeout: 60_000,
-		});
-		const { stdout } = await execFileAsync("which", ["yt-dlp"], {
-			timeout: 5_000,
-		});
-		ytdlpPath = stdout.trim();
-		console.log(`[ytdlp] installed at ${ytdlpPath}`);
-		return ytdlpPath;
-	} catch {
-		// pip3 failed or unavailable.
-	}
-
-	// Attempt brew install (macOS).
-	try {
-		console.log("[ytdlp] pip3 failed; trying brew install...");
-		await execFileAsync("brew", ["install", "yt-dlp"], { timeout: 120_000 });
-		const { stdout } = await execFileAsync("which", ["yt-dlp"], {
-			timeout: 5_000,
-		});
-		ytdlpPath = stdout.trim();
-		console.log(`[ytdlp] installed at ${ytdlpPath}`);
-		return ytdlpPath;
-	} catch {
-		// brew failed or unavailable.
+		// Not on PATH.
 	}
 
 	throw new Error(
-		"yt-dlp is not installed and auto-install failed. " +
-			"Install manually: pip3 install yt-dlp  — or —  brew install yt-dlp",
+		"yt-dlp is not installed. Install it manually: " +
+			"pip3 install yt-dlp  — or —  brew install yt-dlp",
 	);
 }
 
