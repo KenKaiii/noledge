@@ -6,6 +6,7 @@
  * keep `papers/index.ts` free of a provider↔index import cycle.
  */
 
+import { safeFetch } from "@/lib/ai/net/ssrf";
 import { type Attempt, isTransientStatus, withRetry } from "../retry";
 
 const USER_AGENT = "noledge-automation/1.0 (+paper-poller)";
@@ -70,12 +71,11 @@ async function httpTextOnce(
 		});
 	}
 	try {
-		const response = await fetch(url, {
+		const response = await safeFetch(url, {
 			headers: {
 				Accept: options.accept ?? "application/json, text/xml, */*; q=0.8",
 				"User-Agent": USER_AGENT,
 			},
-			redirect: "follow",
 			signal: controller.signal,
 		});
 		const body = await response.text();
@@ -119,12 +119,11 @@ async function httpBinaryOnce(
 		});
 	}
 	try {
-		const response = await fetch(url, {
+		const response = await safeFetch(url, {
 			headers: {
 				Accept: options.accept ?? "application/pdf, application/octet-stream",
 				"User-Agent": USER_AGENT,
 			},
-			redirect: "follow",
 			signal: controller.signal,
 		});
 		const length = response.headers.get("content-length");
