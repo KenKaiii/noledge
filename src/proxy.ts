@@ -1,26 +1,30 @@
 import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
+import {
+	authEnabled,
+	SESSION_COOKIE,
+	verifySessionToken,
+} from "@/lib/ai/auth/session";
 
 /**
- * Cross-origin / DNS-rebinding guard for the unauthenticated `/api/*` routes.
+ * Request gate (Next.js "proxy", formerly "middleware"). Two layers:
  *
- * This is a local-first, single-user app with no auth by design. Next.js'
- * built-in cross-site protection only covers internal `/_next`/`/__nextjs`
- * endpoints, so application route handlers under `/api/*` would otherwise be
- * reachable from any web page the user happens to have open (CSRF via
- * CORS-"simple" requests) or via DNS-rebinding. This proxy closes that gap by
- * rejecting any request that isn't a genuine same-origin call to a loopback
- * host.
+ * 1. Optional auth (all routes). When `NOLEDGE_PASSWORD` is set, every request
+ *    must carry a valid signed session cookie; pages redirect to `/login`, API
+ *    routes get a 401. Unset → no auth (the default, localhost-only model).
  *
- * Defenses (any failure -> 403):
- *  (a) Origin header, when present, must have the same host as the `Host`
- *      header. Defeats CSRF "simple" POSTs (multipart/form-data, text/plain)
- *      from foreign origins, which always carry an `Origin`.
- *  (b) Sec-Fetch-Site, when present, must be `same-origin`, `same-site`, or
- *      `none` (direct navigation / address bar). `cross-site` is rejected.
- *  (c) The `Host` must be a loopback name (`localhost`, `127.0.0.1`, `[::1]`),
- *      optionally with a port. Defeats DNS-rebinding, where an attacker points
- *      a domain they control at 127.0.0.1 to bypass the same-origin checks.
+ * 2. Cross-origin / DNS-rebinding guard (`/api/*`). This is a local-first app;
+ *    Next's built-in cross-site protection only covers `/_next`/`/__nextjs`, so
+ *    route handlers under `/api/*` would otherwise be reachable via CSRF
+ *    ("simple" requests) or DNS-rebinding.
+ *
+ *    Defenses (any failure -> 403):
+ *     (a) Origin header, when present, must match the Host (blocks CSRF).
+ *     (b) Sec-Fetch-Site, when present, must be same-origin/same-site/none.
+ *     (c) Host must be a loopback name — UNLESS auth is enabled, in which case
+ *         the operator has deliberately opted into remote access and the session
+ *         cookie is the access control. The Origin/Sec-Fetch checks above still
+ *         apply, so CSRF protection is retained even when exposed.
  */
 
 const ALLOWED_HOSTNAMES: ReadonlySet<string> = new Set([
@@ -34,6 +38,13 @@ const ALLOWED_FETCH_SITES: ReadonlySet<string> = new Set([
 	"same-origin",
 	"same-site",
 	"none",
+]);
+
+/** Paths reachable without a session (the login flow itself). */
+const PUBLIC_PATHS: ReadonlySet<string> = new Set([
+	"/login",
+	"/api/auth/login",
+	"/api/auth/logout",
 ]);
 
 /** Extract the bare hostname (no port) from a `Host` header value. */
@@ -56,38 +67,60 @@ function forbidden(reason: string): NextResponse {
 	);
 }
 
-export function proxy(request: NextRequest): NextResponse {
-	const host = request.headers.get("host") ?? "";
+export async function proxy(request: NextRequest): Promise<NextResponse> {
+	const { pathname } = request.nextUrl;
+	const isApi = pathname.startsWith("/api/");
+	const gated = authEnabled();
 
-	// (c) DNS-rebinding: only serve loopback hosts.
-	if (!ALLOWED_HOSTNAMES.has(hostnameOf(host))) {
-		return forbidden("host");
-	}
-
-	// (a) CSRF: a cross-origin request carries an Origin whose host differs.
-	const origin = request.headers.get("origin");
-	if (origin !== null) {
-		let originHost: string;
-		try {
-			originHost = new URL(origin).host;
-		} catch {
-			// Opaque/"null" origins are treated as cross-origin.
-			return forbidden("origin");
-		}
-		if (originHost.toLowerCase() !== host.toLowerCase()) {
-			return forbidden("origin");
+	// 1) Auth gate.
+	if (gated && !PUBLIC_PATHS.has(pathname)) {
+		const token = request.cookies.get(SESSION_COOKIE)?.value;
+		if (!(await verifySessionToken(token))) {
+			if (isApi) {
+				return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+			}
+			const loginUrl = new URL("/login", request.url);
+			loginUrl.searchParams.set("next", pathname + request.nextUrl.search);
+			return NextResponse.redirect(loginUrl);
 		}
 	}
 
-	// (b) Fetch metadata: reject explicit cross-site requests.
-	const secFetchSite = request.headers.get("sec-fetch-site");
-	if (secFetchSite !== null && !ALLOWED_FETCH_SITES.has(secFetchSite)) {
-		return forbidden("sec-fetch-site");
+	// 2) Cross-origin / DNS-rebinding guard for API routes.
+	if (isApi) {
+		const host = request.headers.get("host") ?? "";
+
+		// (c) Loopback-only, except when auth is enabled (remote access is then
+		// intentional and the session cookie is the access control).
+		if (!gated && !ALLOWED_HOSTNAMES.has(hostnameOf(host))) {
+			return forbidden("host");
+		}
+
+		// (a) CSRF: a cross-origin request carries an Origin whose host differs.
+		const origin = request.headers.get("origin");
+		if (origin !== null) {
+			let originHost: string;
+			try {
+				originHost = new URL(origin).host;
+			} catch {
+				return forbidden("origin");
+			}
+			if (originHost.toLowerCase() !== host.toLowerCase()) {
+				return forbidden("origin");
+			}
+		}
+
+		// (b) Fetch metadata: reject explicit cross-site requests.
+		const secFetchSite = request.headers.get("sec-fetch-site");
+		if (secFetchSite !== null && !ALLOWED_FETCH_SITES.has(secFetchSite)) {
+			return forbidden("sec-fetch-site");
+		}
 	}
 
 	return NextResponse.next();
 }
 
 export const config = {
-	matcher: "/api/:path*",
+	matcher: [
+		"/((?!_next/static|_next/image|favicon.ico|icon.svg|manifest.webmanifest|robots.txt|sitemap.xml).*)",
+	],
 };
