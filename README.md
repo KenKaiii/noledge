@@ -14,12 +14,15 @@
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
   <a href="https://youtube.com/@kenkaidoesai"><img src="https://img.shields.io/badge/YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="YouTube"></a>
-  <a href="https://skool.com/kenkai"><img src="https://img.shields.io/badge/Skool-Community-7C3AED?style=for-the-badge" alt="Skool"></a>
+  <a href="https://www.skool.com/raid"><img src="https://img.shields.io/badge/Skool-Free%20community-7C3AED?style=for-the-badge" alt="Free Skool community"></a>
 </p>
 
 **Noledge** is a place to dump everything you read, watch, and save, then just *talk to it* like a friend who actually paid attention. PDFs, Word docs, screenshots, web articles, YouTube videos, research papers, random notes. Throw it all in. Then ask questions and get real answers, pulled straight from your own stuff.
 
 It runs on your own computer. Your knowledge stays yours.
+
+> [!TIP]
+> **Want to build your own apps with AI?** A free 7-day build challenge and 20+ step-by-step projects are in my free community: **[skool.com/raid](https://www.skool.com/raid)**
 
 ---
 
@@ -120,7 +123,7 @@ That's it. Start dumping in your stuff and asking questions.
 ## Community
 
 - [YouTube @kenkaidoesai](https://youtube.com/@kenkaidoesai) - tutorials and demos
-- [Skool community](https://skool.com/kenkai) - come hang out and build with us
+- [Free Skool community](https://www.skool.com/raid): a 7-day build challenge and 20+ step-by-step projects
 
 ---
 
